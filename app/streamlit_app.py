@@ -131,6 +131,8 @@ def process_documents(pipeline: DocumentPipeline, uploaded_files):
                     'fields_extracted': len(document.key_values),
                     'processing_time': document.ingest_metadata.processing_time_seconds,
                     'coverage_stats': document.processing_meta.coverage_stats,
+                    'model_calls': document.processing_meta.model_calls_made,
+                    'total_cost': document.processing_meta.total_cost_usd,
                     'processing_log': processing_log,
                     'document': document
                 }
@@ -176,6 +178,8 @@ def display_processing_results():
                 'Match Score': f"{result['signature_match']:.2f}",
                 'Fields': result['fields_extracted'],
                 'Rule Coverage': f"{coverage.get('rule_coverage', 0):.1%}",
+                'Model Calls': result.get('model_calls', 0),
+                'Cost (USD)': f"${result.get('total_cost', 0):.4f}",
                 'Time (s)': f"{result['processing_time']:.1f}",
                 'Status': '✅ Success'
             })
@@ -187,6 +191,8 @@ def display_processing_results():
                 'Match Score': 'N/A',
                 'Fields': 'N/A',
                 'Rule Coverage': 'N/A',
+                'Model Calls': 'N/A',
+                'Cost (USD)': 'N/A',
                 'Time (s)': 'N/A',
                 'Status': f"❌ {result.get('error', 'Error')}"
             })

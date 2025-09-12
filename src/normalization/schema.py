@@ -30,6 +30,7 @@ class KeyValue:
     confidence: float
     extraction_method: str  # "rule", "model", "manual"
     bbox: Optional[BoundingBox] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,6 +86,7 @@ class ProcessingMeta:
     model_calls_made: int = 0
     total_cost_usd: float = 0.0
     coverage_stats: Dict[str, Any] = field(default_factory=dict)
+    model_call_details: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

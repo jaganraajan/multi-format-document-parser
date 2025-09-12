@@ -175,11 +175,15 @@ class SignatureManager:
         set2 = set()
         
         for token in tokens1:
-            token_tuple = (token.page, token.element_type, token.bbox_bucket, token.token_count)
+            # Ensure bbox_bucket is tuple (fix for potential JSON deserialization issue)
+            bbox_bucket = tuple(token.bbox_bucket) if isinstance(token.bbox_bucket, list) else token.bbox_bucket
+            token_tuple = (token.page, token.element_type, bbox_bucket, token.token_count)
             set1.add(token_tuple)
         
         for token in tokens2:
-            token_tuple = (token.page, token.element_type, token.bbox_bucket, token.token_count)
+            # Ensure bbox_bucket is tuple (fix for potential JSON deserialization issue) 
+            bbox_bucket = tuple(token.bbox_bucket) if isinstance(token.bbox_bucket, list) else token.bbox_bucket
+            token_tuple = (token.page, token.element_type, bbox_bucket, token.token_count)
             set2.add(token_tuple)
         
         # Calculate Jaccard similarity

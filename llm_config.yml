@@ -1,0 +1,28 @@
+version: "1.0"
+description: "Optional LLM configuration for gap-filling missing required fields"
+
+# OpenAI Configuration
+model_provider: "openai"
+model: "gpt-4o-mini"
+temperature: 0.0
+
+# Cost Controls
+max_model_calls_per_doc: 1
+max_total_cost_usd_per_doc: 0.05
+
+# Cost Estimation (USD per 1k tokens)
+cost_estimates_per_1k_tokens:
+  prompt: 0.003
+  completion: 0.006
+
+# Caching Configuration
+cache:
+  enabled: true
+  dir: "llm_cache"
+
+# Prompt Configuration
+prompt_preamble: |
+  You are an information extraction assistant. Extract ONLY the requested fields.
+
+json_schema_note: |
+  Return valid JSON object with keys exactly matching the requested field names.

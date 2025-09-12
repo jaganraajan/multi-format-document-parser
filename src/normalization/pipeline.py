@@ -4,6 +4,7 @@ Main document processing pipeline.
 
 import os
 import time
+import yaml
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
@@ -53,7 +54,36 @@ class DocumentPipeline:
         self.text_extractor = TextExtractor()
         self.email_extractor = EmailExtractor()
         
+        # Initialize optional LLM extractor
+        self.llm_extractor = None
+        self._load_llm_config()
+        
         logger.info("Pipeline initialized successfully")
+    
+    def _load_llm_config(self):
+        """Load LLM configuration if available."""
+        llm_config_path = "llm_config.yml"
+        
+        if os.path.exists(llm_config_path):
+            try:
+                with open(llm_config_path, 'r') as f:
+                    llm_config = yaml.safe_load(f)
+                
+                # Try to initialize LLM extractor
+                from .llm import LLMFieldExtractor
+                self.llm_extractor = LLMFieldExtractor(llm_config)
+                
+                if self.llm_extractor.is_available:
+                    logger.info("LLM gap-filling enabled")
+                else:
+                    logger.warning("LLM config found but LLM not available (check API key and dependencies)")
+                    
+            except ImportError:
+                logger.warning("LLM config found but openai package not installed. Install with: pip install openai>=1.0.0")
+            except Exception as e:
+                logger.warning(f"Error loading LLM config: {e}")
+        else:
+            logger.debug("No llm_config.yml found, LLM gap-filling disabled")
     
     def process_document(self, file_path: str) -> Tuple[NormalizedDocument, str]:
         """
@@ -98,7 +128,14 @@ class DocumentPipeline:
             document.processing_meta.rules_applied = rules_applied
             processing_log.append(f"Extracted {len(extracted_values)} fields using rules: {rules_applied}")
             
-            # Stage 4: Create sections and chunks
+            # Stage 4: LLM gap-filling (if enabled and needed)
+            llm_extracted_count = 0
+            if self.llm_extractor and self.llm_extractor.is_available:
+                llm_extracted_count = self._apply_llm_gap_filling(
+                    document, text, signature.signature_id, processing_log
+                )
+            
+            # Stage 5: Create sections and chunks
             self._finalize_document(document, text, layout_elements, file_type)
             
             # Calculate final stats
@@ -166,6 +203,100 @@ class DocumentPipeline:
         """Apply rule-based extraction."""
         extracted_values, rules_applied = self.rules_engine.apply_rules(text, signature_id)
         return extracted_values, rules_applied
+    
+    def _apply_llm_gap_filling(self, document: NormalizedDocument, text: str, 
+                              signature_id: str, processing_log: List[str]) -> int:
+        """
+        Apply LLM gap-filling for missing required fields.
+        
+        Args:
+            document: Document being processed
+            text: Document text content
+            signature_id: Document signature ID
+            processing_log: Processing log to append to
+            
+        Returns:
+            Number of fields extracted by LLM
+        """
+        try:
+            # Get required fields for this signature
+            required_fields = self.rules_engine.get_required_fields(signature_id)
+            
+            if not required_fields:
+                processing_log.append("LLM: No required fields defined, skipping")
+                return 0
+            
+            # Find missing required fields
+            extracted_field_names = {kv.key for kv in document.key_values}
+            missing_fields = [field for field in required_fields if field not in extracted_field_names]
+            
+            if not missing_fields:
+                processing_log.append(f"LLM: All {len(required_fields)} required fields already extracted")
+                return 0
+            
+            # Check limits
+            max_calls = getattr(self.llm_extractor.config, 'max_model_calls_per_doc', 1)
+            max_cost = getattr(self.llm_extractor.config, 'max_total_cost_usd_per_doc', 0.05)
+            
+            if document.processing_meta.model_calls_made >= max_calls:
+                processing_log.append(f"LLM: Max model calls ({max_calls}) reached, skipping")
+                return 0
+            
+            if document.processing_meta.total_cost_usd >= max_cost:
+                processing_log.append(f"LLM: Max cost (${max_cost}) reached, skipping")
+                return 0
+            
+            processing_log.append(f"LLM: Attempting to extract {len(missing_fields)} missing fields: {missing_fields}")
+            
+            # Extract missing fields using LLM
+            result = self.llm_extractor.extract_missing_fields(
+                document_content=text,
+                missing_fields=missing_fields,
+                signature_id=signature_id,
+                content_hash=document.ingest_metadata.content_hash
+            )
+            
+            # Process results
+            extracted_fields = result.get('extracted_fields', [])
+            estimated_cost = result.get('cost_estimated', 0.0)
+            tokens_used = result.get('tokens_used', 0)
+            cached = result.get('cached', False)
+            
+            # Add extracted fields to document (avoid duplicates)
+            new_fields_added = 0
+            for field in extracted_fields:
+                if field.key not in extracted_field_names:
+                    document.key_values.append(field)
+                    new_fields_added += 1
+            
+            # Update processing metadata
+            document.processing_meta.model_calls_made += 1
+            document.processing_meta.total_cost_usd += estimated_cost
+            
+            # Add call details
+            call_detail = {
+                "missing_requested": missing_fields,
+                "model_added": [f.key for f in extracted_fields],
+                "cost_estimated": estimated_cost,
+                "tokens_used": tokens_used,
+                "cached": cached
+            }
+            document.processing_meta.model_call_details.append(call_detail)
+            
+            # Update processing log
+            cache_status = " (cached)" if cached else ""
+            processing_log.append(
+                f"LLM: Extracted {new_fields_added} fields, "
+                f"cost: ${estimated_cost:.4f}, tokens: {tokens_used}{cache_status}"
+            )
+            
+            return new_fields_added
+            
+        except Exception as e:
+            error_msg = f"LLM: Error during gap-filling: {e}"
+            processing_log.append(error_msg)
+            logger.error(error_msg)
+            return 0
     
     def _finalize_document(self, document: NormalizedDocument, text: str, 
                           layout_elements: List[Dict[str, Any]], file_type: str):

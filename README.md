@@ -169,6 +169,72 @@ print(f"Extracted {len(document.key_values)} fields")
 | HTML | `.html`, `.htm` | HTML tag removal, content extraction |
 | Email | `.eml` | Header parsing, body extraction |
 
+## 🤖 Optional LLM Gap-Fill
+
+The parser includes optional LLM-powered gap-filling to extract required fields that deterministic rules couldn't find. This feature is disabled by default and designed to be cost-aware and deterministic-first.
+
+### Purpose
+
+- **Gap-filling only**: LLM is invoked only for required fields missing after rule extraction
+- **Deterministic-first**: Rules and signatures remain primary; LLM never overwrites existing rule-derived values
+- **Cost-controlled**: Configurable limits on model calls per document and per-document cost caps
+
+### Enabling LLM Support
+
+1. **Install optional dependency**
+   ```bash
+   pip install openai>=1.0.0
+   ```
+
+2. **Set OpenAI API key**
+   ```bash
+   export OPENAI_API_KEY="your-api-key-here"
+   ```
+
+3. **Create LLM configuration**
+   
+   Create `llm_config.yml` in the repository root:
+   ```yaml
+   model_provider: "openai"
+   model: "gpt-4o-mini"
+   temperature: 0.0
+   max_model_calls_per_doc: 1
+   max_total_cost_usd_per_doc: 0.05
+   cost_estimates_per_1k_tokens:
+     prompt: 0.003
+     completion: 0.006
+   cache:
+     enabled: true
+     dir: "llm_cache"
+   ```
+
+### Cost Controls and Caching
+
+- **Per-document limits**: Maximum model calls and cost per document
+- **Intelligent caching**: Avoids repeat costs for identical scenarios based on signature + content hash + missing field set
+- **Token estimation**: Rough heuristic-based cost tracking (4 chars ≈ 1 token)
+- **Graceful degradation**: Missing API key or dependencies result in rule-only processing with warnings
+
+### Monitoring LLM Usage
+
+- **UI Integration**: Processing results table shows "Model Calls" and "Cost (USD)" columns
+- **Detailed Logs**: Processing logs include LLM activity (fields requested, fields returned, estimated cost)
+- **Method Tracking**: Key-value pairs show extraction method ("rule" vs "model") for interpretability
+
+### Example LLM Configuration
+
+```yaml
+# Enable LLM gap-filling with cost controls
+model: "gpt-4o-mini"              # Fast, cost-effective model
+max_model_calls_per_doc: 1        # At most one LLM call per document
+max_total_cost_usd_per_doc: 0.05  # Cap at 5 cents per document
+cache:
+  enabled: true                   # Cache responses to avoid repeat costs
+  dir: "llm_cache"               # Local cache directory
+```
+
+**Note**: Without `llm_config.yml` or the OpenAI API key, the system behaves exactly as before with no errors or changes to existing functionality.
+
 ## 🎯 Based On
 
 This starter implementation is based on the comprehensive hybrid document normalization pipeline from [jaganraajan/rag-document-parser PR #10](https://github.com/jaganraajan/rag-document-parser/pull/10), simplified for demonstration and educational purposes.

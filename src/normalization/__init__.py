@@ -1,0 +1,1 @@
+"""Normalization module for multi-format document processing."""

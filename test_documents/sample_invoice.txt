@@ -1,0 +1,13 @@
+Sample Invoice Document
+
+Invoice Number: INV-12345
+Date: 12/15/2024
+Total Amount: $1,234.56
+
+From: Acme Corporation
+Email: billing@acme.com
+Phone: (555) 123-4567
+
+This is a sample invoice for testing the document parser.
+The system should extract key fields like invoice numbers,
+amounts, dates, and contact information.

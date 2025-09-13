@@ -12,6 +12,7 @@ from .schema import NormalizedDocument, Section, Chunk, calculate_coverage_stats
 from .signatures import SignatureManager
 from .rules_engine import RulesEngine
 from .llm_extractor import AzureOpenAILLMExtractor
+from .azure_di_extractor import AzureDocumentIntelligenceExtractor
 from .extractors.pdf_extractor import PDFExtractor
 from .extractors.text_extractor import TextExtractor
 from .extractors.email_extractor import EmailExtractor
@@ -50,6 +51,7 @@ class DocumentPipeline:
         self.signature_manager = SignatureManager(self.signatures_dir)
         self.rules_engine = RulesEngine(self.rules_dir)
         self.llm_extractor = AzureOpenAILLMExtractor()
+        self.di_extractor = AzureDocumentIntelligenceExtractor()
         self.repository = DocumentRepository(self.outputs_dir)
 
         # File extractors
@@ -58,6 +60,10 @@ class DocumentPipeline:
         self.email_extractor = EmailExtractor()
 
         logger.info("Pipeline initialized (LLM mode %s)" % ("+ rules" if self.use_rules else "only"))
+        if self.di_extractor.enabled:
+            logger.info("Azure Document Intelligence fallback enabled (model %s)", self.di_extractor.model_id)
+        else:
+            logger.info("Azure Document Intelligence fallback disabled (env missing)")
 
     def process_document(self, file_path: str) -> Tuple[NormalizedDocument, str]:
         """Process a single document end-to-end."""
@@ -92,6 +98,20 @@ class DocumentPipeline:
         log_lines.append(
             f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
         )
+
+        # --- Azure Document Intelligence Fallback (PDF only) ---
+        di_triggered = False
+        if file_type == 'pdf' and len(kvs) == 0:
+            if self.di_extractor.enabled:
+                di_kvs, di_meta = self.di_extractor.extract(file_path)
+                if di_kvs:
+                    document.key_values.extend(di_kvs)
+                    di_triggered = True
+                    log_lines.append(f"DI fallback fields: {len(di_kvs)} model={di_meta.get('model_used')}")
+                else:
+                    log_lines.append(f"DI fallback produced 0 fields error={di_meta.get('error')}")
+            else:
+                log_lines.append("DI fallback disabled (env vars missing)")
 
         # Optional legacy rules (disabled by default)
         if self.use_rules:

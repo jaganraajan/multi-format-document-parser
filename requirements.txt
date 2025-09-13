@@ -10,3 +10,4 @@ python-dotenv>=1.0.0
 faker>=18.0.0
 jinja2>=3.1.0
 weasyprint>=60.0  # optional: for PDF generation
+azure-ai-formrecognizer>=3.3.0  # Azure Document Intelligence (fallback extractor)

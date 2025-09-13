@@ -13,6 +13,12 @@ import tempfile
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import pandas as pd
+try:
+    from dotenv import load_dotenv
+    # Load nearest .env (current working dir or project root)
+    load_dotenv()
+except Exception:
+    pass  # Safe to ignore if not installed yet
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

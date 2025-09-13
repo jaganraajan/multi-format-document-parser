@@ -78,13 +78,22 @@ class IngestMetadata:
 @dataclass
 class ProcessingMeta:
     """Metadata about document processing."""
-    pipeline_version: str = "1.0.0"
+    pipeline_version: str = "1.1.0"
     signature_id: Optional[str] = None
     signature_match_score: float = 0.0
     rules_applied: List[str] = field(default_factory=list)
     model_calls_made: int = 0
     total_cost_usd: float = 0.0
     coverage_stats: Dict[str, Any] = field(default_factory=dict)
+    # Gating and confidence fields
+    gating_decision: str = ""
+    document_confidence: float = 0.0
+    coverage_ratio: float = 0.0
+    required_fields_present: int = 0
+    required_fields_total: int = 0
+    ai_used: bool = False
+    di_used: bool = False
+    confidence_breakdown: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

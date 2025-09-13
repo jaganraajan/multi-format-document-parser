@@ -1,0 +1,12 @@
+# Ignore generated images and metadata, but keep prompts and fragments
+images/
+*.png
+*.jpg
+*.jpeg
+metadata/*.json
+
+# Keep the fragments YAML file and prompts directory structure
+!prompt_fragments.yml
+!prompts/
+!images/.gitkeep
+!metadata/.gitkeep

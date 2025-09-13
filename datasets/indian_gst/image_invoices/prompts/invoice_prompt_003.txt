@@ -1,0 +1,1 @@
+Create a realistic Indian GST invoice image. Organized sections for billing details, line items, and tax calculations. Include HSN codes for all line items. Use ₹ currency symbol before amounts. All data must be obviously fictional. Use placeholder logo. Add footer 'Synthetic Test Data'.

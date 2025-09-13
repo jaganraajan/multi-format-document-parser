@@ -149,10 +149,71 @@ The evaluation script computes:
 2. Add template selection logic for layout diversity
 3. Ensure all templates include required GST fields
 
-### Future Enhancements (TODO)
+### Image Prompt & Generation Script
+
+A companion script generates synthetic prompts for creating scanned-style invoice images via Azure OpenAI DALL-E or compatible image generation endpoints.
+
+### Basic Usage
+Generate prompts only (no API calls):
+```bash
+python scripts/generate_invoice_image_prompts.py --count 5 --dry-run
+```
+
+### Image Generation with Azure OpenAI
+Set environment variables:
+```bash
+export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
+export AZURE_OPENAI_API_KEY="your-api-key"
+export AZURE_OPENAI_API_VERSION="2024-02-01"  # optional
+```
+
+Generate prompts and images:
+```bash
+python scripts/generate_invoice_image_prompts.py --count 8 --generate-images --seed 42
+```
+
+### Advanced Options
+```bash
+# Custom image size
+python scripts/generate_invoice_image_prompts.py --count 3 --size 832x1216
+
+# Custom fragments and output directory
+python scripts/generate_invoice_image_prompts.py --count 10 --fragments custom_fragments.yml --output-dir /custom/path
+
+# Skip metadata generation
+python scripts/generate_invoice_image_prompts.py --count 5 --no-metadata
+```
+
+### Output Structure
+- `prompts/`: Text files with composed prompts
+- `images/`: Generated PNG images (if API enabled)
+- `metadata/`: JSON metadata with fragment selections and API response info
+
+### Script Arguments
+- `--count`: Number of samples to generate (default: 5)
+- `--fragments`: Path to YAML fragments file (default: datasets/indian_gst/prompt_fragments.yml)
+- `--output-dir`: Output directory (default: datasets/indian_gst/image_invoices)
+- `--model`: Image generation model (default: gpt-image-1)
+- `--size`: Image size in WIDTHxHEIGHT format (default: 1024x1536)
+- `--seed`: Random seed for reproducible generation
+- `--generate-images`: Enable API calls for image generation
+- `--dry-run`: Show prompts to stdout only
+- `--no-metadata`: Skip metadata JSON files
+- `--timeout`: API timeout in seconds (default: 60)
+- `--verbose`: Enable detailed logging
+
+### Prompt Composition
+The script combines fragments from different categories:
+- **Required**: 1 base + 1 layout + 1 tax fragment
+- **Optional**: 0-1 noise + 0-1 embellishment + 0-2 variants
+
+Each fragment is designed to flow naturally when concatenated, with automatic cleanup of punctuation and addition of a fixed suffix ensuring synthetic data labeling.
+
+## Future Enhancements (TODO)
 - Multiple invoice layout templates (modern, traditional, minimalist)
-- Watermark and document skew simulation
-- OCR-like noise generation (blurred text, scan artifacts)
+- PDF conversion of generated images  
+- Multi-page composite prompts
+- Automatic pairing with synthetic JSON ground-truth when text-based generation is aligned
 - Confidence scoring for extracted fields
 - Integration with Azure Document Intelligence for comparison
 

@@ -85,6 +85,11 @@ class ProcessingMeta:
     model_calls_made: int = 0
     total_cost_usd: float = 0.0
     coverage_stats: Dict[str, Any] = field(default_factory=dict)
+    # New fields for adaptive hybrid parsing
+    required_fields: List[str] = field(default_factory=list)
+    gating_decision: Optional[str] = None
+    llm_invoked: bool = False
+    document_confidence: float = 0.0
 
 
 @dataclass

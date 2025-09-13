@@ -1,0 +1,15 @@
+version: 2
+description: Signature-specific rules for test_signature (auto-learned)
+rules:
+- field_name: customer_name
+  pattern: (?i)(?:customer\ name)\s*[:#-]?\s*([A-Z0-9._@/-]+)
+  confidence: 0.8
+  required: false
+  learned_from: llm_extraction
+- field_name: po_number
+  pattern: '(?i)(?:john\ smith\
+
+    po\ number)\s*[:#-]?\s*([A-Z0-9._@/-]+)'
+  confidence: 0.8
+  required: false
+  learned_from: llm_extraction

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tax Invoice - INV-2025-7448</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }
+        .header { text-align: center; margin-bottom: 20px; }
+        .invoice-title { font-size: 18px; font-weight: bold; }
+        .company-details { margin: 15px 0; }
+        .invoice-details { margin: 15px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #f5f5f5; font-weight: bold; }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .totals { margin-top: 20px; }
+        .grid { display: flex; gap: 20px; }
+        .grid-item { flex: 1; }
+        .label { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="invoice-title">TAX INVOICE</div>
+    </div>
+    
+    <div class="grid">
+        <div class="grid-item">
+            <div class="company-details">
+                <div class="label">From:</div>
+                <div><strong>Chaudhary-Ramesh</strong></div>
+                <div>GSTIN: 28BEZLF2696LFZ8</div>
+                <div>28, De Marg, New Delhi 735372</div>
+                <div>Phone: 08813465335</div>
+                <div>Email: sdar@shanker-peri.info</div>
+            </div>
+        </div>
+        
+        <div class="grid-item">
+            <div class="company-details">
+                <div class="label">To:</div>
+                <div><strong>Sura and Sons</strong></div>
+                <div>GSTIN: 28UERTD9762YZZ9</div>
+                <div>30/873, Goda Circle, Nizamabad-410504</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="invoice-details">
+        <table>
+            <tr>
+                <td class="label">Invoice Number:</td>
+                <td>INV-2025-7448</td>
+                <td class="label">Invoice Date:</td>
+                <td>2025-09-02</td>
+            </tr>
+            <tr>
+                <td class="label">Place of Supply:</td>
+                <td>Andhra Pradesh</td>
+                <td class="label">Reverse Charge:</td>
+                <td>Yes</td>
+            </tr>
+        </table>
+    </div>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>S.No</th>
+                <th>Description</th>
+                <th>HSN/SAC</th>
+                <th>Qty</th>
+                <th>Unit Price</th>
+                <th>Taxable Value</th>
+                
+                <th>CGST %</th>
+                <th>CGST Amt</th>
+                <th>SGST %</th>
+                <th>SGST Amt</th>
+                
+                <th>Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            
+            <tr>
+                <td class="text-center">1</td>
+                <td>Stationery Items</td>
+                <td class="text-center">9983</td>
+                <td class="text-right">5</td>
+                <td class="text-right">555.02</td>
+                <td class="text-right">2775.10</td>
+                
+                <td class="text-right">6.0%</td>
+                <td class="text-right">166.51</td>
+                <td class="text-right">6.0%</td>
+                <td class="text-right">166.51</td>
+                
+                <td class="text-right">3108.11</td>
+            </tr>
+            
+        </tbody>
+    </table>
+    
+    <div class="totals">
+        <table style="width: 40%; margin-left: auto;">
+            <tr>
+                <td class="label">Taxable Total:</td>
+                <td class="text-right">₹ 2775.10</td>
+            </tr>
+            <tr>
+                <td class="label">Total Tax:</td>
+                <td class="text-right">₹ 333.02</td>
+            </tr>
+            <tr style="font-weight: bold; background-color: #f5f5f5;">
+                <td class="label">Total Amount:</td>
+                <td class="text-right">₹ 3108.12</td>
+            </tr>
+        </table>
+    </div>
+    
+    
+    <div style="margin-top: 20px;">
+        <strong>Amount in Words:</strong> Rupees Saepe Thousand Only
+    </div>
+    
+    
+    <div style="margin-top: 30px; text-align: center; font-size: 10px; color: #666;">
+        This is a computer generated synthetic invoice for testing purposes only.
+    </div>
+</body>
+</html>

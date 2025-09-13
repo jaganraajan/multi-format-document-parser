@@ -1,0 +1,49 @@
+# Prompt fragments for generating synthetic Indian GST invoice images
+# Each section contains fragments that can be combined to create diverse prompts
+
+base:
+  - "Generate a synthetic Indian GST Tax Invoice document"
+  - "Create a realistic Indian GST invoice image"
+  - "Generate a professional Indian GST tax invoice"
+  - "Create a detailed Indian GST invoice document"
+
+layout:
+  - "A4 page, monochrome, tabular layout, clean heading 'TAX INVOICE'"
+  - "Narrow left margin, wide table spanning most of the width"
+  - "Standard business invoice format with header, itemized table, and footer"
+  - "Clean portrait orientation with proper margins and spacing"
+  - "Professional layout with company letterhead area at top"
+  - "Organized sections for billing details, line items, and tax calculations"
+
+tax:
+  - "Intra-state supply with CGST and SGST 9% each"
+  - "Inter-state supply using IGST 18% only"
+  - "Mixed tax rates with some items at 12% and others at 18%"
+  - "Include HSN codes for all line items"
+  - "Show detailed tax breakdown in separate table"
+  - "Display total taxable amount and total tax clearly"
+
+noise:
+  - "Slight scan blur and faint paper texture"
+  - "Light photocopy noise with subtle horizontal lines"
+  - "Minor document aging with very faint yellowing"
+  - "Subtle ink bleeding on some characters"
+  - "Light scanner artifacts and compression noise"
+
+embellishments:
+  - "Add a faded red 'PAID' circular stamp overlapping the totals"
+  - "Watermark the word 'DRAFT' diagonally in pale gray"
+  - "Include a small company logo placeholder in top-left corner"
+  - "Add a security pattern border along the edges"
+  - "Include a barcode or QR code in the bottom corner"
+  - "Show 'ORIGINAL FOR RECIPIENT' text in small font"
+
+variants:
+  - "Use ₹ currency symbol before amounts"
+  - "Include line items with HSN codes 8517 and 8471"
+  - "Show total amount in words near the bottom"
+  - "Add GSTIN numbers for both supplier and buyer"
+  - "Include invoice date and due date prominently"
+  - "Display place of supply and state codes"
+  - "Add authorized signatory section at bottom"
+  - "Include terms and conditions in small print"

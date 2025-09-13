@@ -138,7 +138,7 @@ All documents are normalized to a consistent JSON structure:
 
 ### Synthetic Dataset (Indian GST Invoices)
 
-A synthetic invoice generator lives in `scripts/generate_indian_invoices.py` producing HTML/JSON (and optional PDF) GST-style invoices for benchmarking extraction. See `datasets/indian_gst/README.md` for details.
+A synthetic invoice generator lives in `scripts/generate_indian_invoices.py` producing HTML/JSON (and optional PDF) GST-style invoices for benchmarking extraction. A companion script `scripts/generate_invoice_image_prompts.py` generates image prompts and optionally creates scanned-style invoice images via Azure OpenAI. See `datasets/indian_gst/README.md` for details.
 
 ```bash
 # Generate 10 synthetic invoices
@@ -146,6 +146,9 @@ python scripts/generate_indian_invoices.py --count 10
 
 # Generate with PDF output (requires WeasyPrint)
 python scripts/generate_indian_invoices.py --count 25 --pdf
+
+# Generate image prompts and images (requires Azure OpenAI)
+python scripts/generate_invoice_image_prompts.py --count 8 --generate-images
 
 # Evaluate parsing accuracy
 python scripts/evaluate_invoices.py

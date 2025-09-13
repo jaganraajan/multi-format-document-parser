@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 try:
     from faker import Faker
@@ -27,12 +27,29 @@ except ImportError as e:
     print("💡 Install with: pip install faker jinja2")
     sys.exit(1)
 
-# Optional PDF generation
-try:
-    import weasyprint
-    WEASYPRINT_AVAILABLE = True
-except ImportError:
-    WEASYPRINT_AVAILABLE = False
+def load_weasyprint() -> Tuple[Optional[Any], Optional[str]]:
+    """Attempt to import weasyprint lazily.
+
+    Returns (module, error_message). If module is None, PDF support is disabled.
+    Catches both ImportError (package not installed) and OSError (system libs missing).
+    """
+    try:
+        import weasyprint  # type: ignore
+        return weasyprint, None
+    except ImportError as e:
+        return None, (
+            "WeasyPrint is not installed. Install with: pip install weasyprint\n"
+            "macOS system libs (Homebrew): brew install cairo pango gdk-pixbuf libffi\n"
+            "Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libcairo2 libgdk-pixbuf2.0-0 libffi-dev"
+        )
+    except OSError as e:  # Missing shared libraries (e.g., libgobject-2.0)
+        return None, (
+            f"WeasyPrint import failed due to missing system libraries: {e}\n"
+            "Install required native deps.\n"
+            "macOS (Homebrew): brew install cairo pango gdk-pixbuf libffi\n"
+            "Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libcairo2 libgdk-pixbuf2.0-0 libffi-dev\n"
+            "Then: pip install --upgrade weasyprint"
+        )
 
 
 class IndianGSTInvoiceGenerator:
@@ -393,18 +410,28 @@ def create_html_template() -> str:
 </html>"""
 
 
-def generate_invoices(count: int, output_dir: Path, max_items: int, 
+def generate_invoices(count: int, output_dir: Path, max_items: int,
                      generate_pdf: bool, seed: Optional[int] = None) -> None:
-    """Generate specified number of synthetic invoices."""
-    
+    """Generate specified number of synthetic invoices.
+
+    Lazily loads WeasyPrint only if PDF output requested. Provides a single
+    actionable message if PDF generation cannot proceed, then continues with
+    HTML/JSON generation.
+    """
+
+    weasyprint_module: Optional[Any] = None
+    if generate_pdf:
+        weasyprint_module, wp_error = load_weasyprint()
+        if wp_error:
+            print("⚠️  PDF generation disabled:")
+            print(wp_error)
+            print("📄 Falling back to HTML + JSON only. Proceeding...\n")
+
     print(f"🏭 Generating {count} synthetic Indian GST invoices...")
     print(f"📁 Output directory: {output_dir}")
     print(f"📄 Max line items: {max_items}")
-    print(f"📋 PDF generation: {'Enabled' if generate_pdf and WEASYPRINT_AVAILABLE else 'Disabled'}")
-    
-    if generate_pdf and not WEASYPRINT_AVAILABLE:
-        print("⚠️  WeasyPrint not available. Install with: pip install weasyprint")
-        print("📄 Continuing with HTML and JSON generation only...")
+    pdf_status = "Enabled" if (generate_pdf and weasyprint_module) else "Disabled"
+    print(f"� PDF generation: {pdf_status}")
     
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -437,9 +464,9 @@ def generate_invoices(count: int, output_dir: Path, max_items: int,
                                 encoding='utf-8')
             
             # Generate PDF if requested and available
-            if generate_pdf and WEASYPRINT_AVAILABLE:
+            if generate_pdf and weasyprint_module:
                 try:
-                    html_doc = weasyprint.HTML(string=html_content)
+                    html_doc = weasyprint_module.HTML(string=html_content)
                     html_doc.write_pdf(str(pdf_file))
                 except Exception as e:
                     print(f"⚠️  PDF generation failed for {base_name}: {e}")

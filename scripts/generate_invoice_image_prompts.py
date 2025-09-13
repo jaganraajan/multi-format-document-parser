@@ -22,23 +22,32 @@ from typing import Dict, List, Optional, Tuple
 import requests
 import yaml
 
+try:
+    from dotenv import load_dotenv
+    # Load nearest .env (current working dir or project root)
+    load_dotenv()
+except Exception:
+    pass  # Safe to ignore if not installed yet
 
 class ImagePromptGenerator:
     """Generator for invoice image prompts and optional images."""
     
-    def __init__(self, fragments_file: Path, model: str = "gpt-image-1", 
-                 size: str = "1024x1536", timeout: int = 60):
+    def __init__(self, fragments_file: Path, model: str = "gpt-image-1",
+                 size: str = "1024x1792", timeout: int = 60,
+                 deployment: Optional[str] = None, num_images: int = 1):
         """Initialize the generator with configuration."""
         self.fragments_file = fragments_file
         self.model = model
         self.size = size
         self.timeout = timeout
         self.fragments = self._load_fragments()
-        
-        # Azure OpenAI configuration
-        self.endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
+
+        # Azure OpenAI DALL-E specific configuration (dedicated env vars)
+        self.endpoint = os.getenv("AZURE_OPENAI_DALLE_ENDPOINT")
+        self.api_key = os.getenv("AZURE_OPENAI_DALLE_API_KEY")
+        self.deployment = deployment or os.getenv("AZURE_OPENAI_DALLE_DEPLOYMENT", "dalle")
         self.api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        self.num_images = max(1, min(num_images, 10))
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -137,21 +146,22 @@ class ImagePromptGenerator:
         self.logger.warning("Could not generate unique prompt after maximum attempts")
         return prompt, fragment_info
     
-    def _call_image_api(self, prompt: str) -> Tuple[Optional[bytes], Dict, float]:
+    def _call_image_api(self, prompt: str) -> Tuple[Optional[List[bytes]], Dict, float]:
         """Call Azure OpenAI Image Generation API."""
-        if not self.endpoint or not self.api_key:
-            return None, {"error": "Missing Azure OpenAI credentials"}, 0.0
-        
-        url = f"{self.endpoint}/openai/images/generations"
+        if not self.endpoint or not self.api_key or not self.deployment:
+            return None, {"error": "Missing Azure DALL-E credentials (AZURE_OPENAI_DALLE_*)"}, 0.0
+
+        # url = f"{self.endpoint}"
         headers = {
             "Content-Type": "application/json",
             "api-key": self.api_key
         }
         
         payload = {
+            "model": self.deployment,
             "prompt": prompt,
             "size": self.size,
-            "n": 1,
+            "n": self.num_images,
             "response_format": "b64_json"
         }
         
@@ -161,24 +171,35 @@ class ImagePromptGenerator:
         max_retries = 2
         for retry in range(max_retries + 1):
             try:
+                # Print the request URL and parameters for debugging
+                print(f"Requesting: {self.endpoint}?api-version={self.api_version}")
+                print(f"Headers: {headers}")
+                print(f"Payload: {json.dumps(payload)}")
+
                 response = requests.post(
-                    url,
+                    self.endpoint,
                     headers=headers,
                     json=payload,
-                    timeout=self.timeout,
-                    params={"api-version": self.api_version}
+                    timeout=self.timeout
                 )
                 
                 latency = (time.time() - start_time) * 1000  # Convert to milliseconds
                 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     data = response.json()
-                    if "data" in data and len(data["data"]) > 0:
-                        b64_image = data["data"][0]["b64_json"]
-                        image_bytes = base64.b64decode(b64_image)
-                        return image_bytes, {"status": "success", "response": data}, latency
-                    else:
-                        return None, {"error": "No image data in response", "response": data}, latency
+                    # Some Azure deployments return direct data; others require follow-up (omitted for brevity)
+                    if "data" in data and data["data"]:
+                        images: List[bytes] = []
+                        for item in data["data"]:
+                            if "b64_json" in item:
+                                try:
+                                    images.append(base64.b64decode(item["b64_json"]))
+                                except Exception:
+                                    continue
+                        if images:
+                            return images, {"status": "success", "count": len(images), "response": data}, latency
+                        return None, {"error": "No decodable image data", "response": data}, latency
+                    return None, {"error": "Malformed response", "response": data}, latency
                 
                 elif response.status_code in [429, 500, 502, 503, 504]:
                     # Transient errors - retry with exponential backoff
@@ -250,34 +271,37 @@ class ImagePromptGenerator:
                 f.write(prompt)
             
             # Generate image if requested
-            image_file = None
+            image_files: List[str] = []
             api_response = {}
             api_latency = 0.0
             
             if generate_images:
                 self.logger.info(f"Generating image for sample {i}")
-                image_bytes, api_response, api_latency = self._call_image_api(prompt)
-                
-                if image_bytes:
-                    image_file = output_dir / "images" / f"invoice_image_{i:03d}.png"
-                    with open(image_file, 'wb') as f:
-                        f.write(image_bytes)
-                    self.logger.info(f"Saved image: {image_file}")
+                images_bytes, api_response, api_latency = self._call_image_api(prompt)
+                if images_bytes:
+                    for idx, img in enumerate(images_bytes, start=1):
+                        image_path = output_dir / "images" / f"invoice_image_{i:03d}_{idx}.png"
+                        with open(image_path, 'wb') as f:
+                            f.write(img)
+                        image_files.append(image_path.name)
+                    self.logger.info(f"Saved {len(image_files)} image(s) for sample {i}")
                 else:
-                    self.logger.error(f"Failed to generate image for sample {i}: {api_response.get('error', 'Unknown error')}")
+                    self.logger.error(f"Failed image gen sample {i}: {api_response.get('error', 'Unknown error')}")
             
             # Save metadata if not disabled
             if not no_metadata:
                 metadata = {
                     "prompt_file": str(prompt_file.name),
-                    "image_file": str(image_file.name) if image_file else None,
+                    "image_files": image_files if image_files else None,
                     "fragments": fragments,
                     "seed": seed,
                     "timestamp_utc": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    "deployment": self.deployment,
                     "model": self.model,
                     "size": self.size,
+                    "num_images_requested": self.num_images,
                     "api_latency_ms": round(api_latency, 2),
-                    "status": "success" if not generate_images or image_bytes else "failed"
+                    "status": "success" if (not generate_images or image_files) else "failed"
                 }
                 
                 # Add minimal API response info if available
@@ -317,13 +341,17 @@ Examples:
                        default=Path('datasets/indian_gst/image_invoices'),
                        help='Output directory (default: datasets/indian_gst/image_invoices)')
     parser.add_argument('--model', default='gpt-image-1',
-                       help='Image generation model (default: gpt-image-1)')
-    parser.add_argument('--size', default='1024x1536',
-                       help='Image size (default: 1024x1536)')
+                       help='(Logical) model label (default: gpt-image-1)')
+    parser.add_argument('--deployment', default=None,
+                       help='Azure DALL-E deployment name (default: env AZURE_OPENAI_DALLE_DEPLOYMENT or "dalle")')
+    parser.add_argument('--size', default='1024x1792',
+                       help='Image size (default: 1024x1792)')
     parser.add_argument('--seed', type=int,
                        help='Random seed for deterministic fragment selection')
     parser.add_argument('--generate-images', action='store_true',
-                       help='Generate images via Azure OpenAI API (requires env vars)')
+                       help='Generate images via Azure OpenAI DALL-E API (requires AZURE_OPENAI_DALLE_* env vars)')
+    parser.add_argument('--num-images', type=int, default=1,
+                       help='Number of images per prompt (1-10)')
     parser.add_argument('--dry-run', action='store_true',
                        help='Show composed prompts to stdout only')
     parser.add_argument('--no-metadata', action='store_true',
@@ -361,8 +389,9 @@ Examples:
     
     # Show environment info
     if args.generate_images:
-        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = os.getenv("AZURE_OPENAI_DALLE_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = os.getenv("AZURE_OPENAI_DALLE_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+        deployment = os.getenv("AZURE_OPENAI_DALLE_DEPLOYMENT") or args.deployment or "dalle"
         
         if not endpoint or not api_key:
             logger.warning("Missing Azure OpenAI environment variables:")
@@ -370,7 +399,8 @@ Examples:
             logger.warning("  AZURE_OPENAI_API_KEY")
             logger.warning("Will generate prompts only")
         else:
-            logger.info(f"Azure OpenAI endpoint: {endpoint}")
+            logger.info(f"Azure DALL-E endpoint: {endpoint}")
+            logger.info(f"Deployment: {deployment}")
             logger.info(f"API version: {os.getenv('AZURE_OPENAI_API_VERSION', '2024-02-01')}")
     
     try:
@@ -378,7 +408,9 @@ Examples:
             fragments_file=args.fragments,
             model=args.model,
             size=args.size,
-            timeout=args.timeout
+            timeout=args.timeout,
+            deployment=args.deployment,
+            num_images=args.num_images
         )
         
         generator.generate_samples(

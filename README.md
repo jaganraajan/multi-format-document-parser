@@ -191,3 +191,44 @@ For questions or issues:
 - Open a GitHub issue
 - Check existing documentation
 - Review the example configurations
+
+## 🤖 LLM Extraction (Azure OpenAI)
+
+The pipeline now uses an Azure OpenAI model to extract key fields (invoice_number, total_amount, date, vendor_name, email, phone_number) directly from the raw document text. Regex rules are still present but currently disabled by default unless you enable hybrid mode in code.
+
+### 1. Azure Setup
+Provision an Azure OpenAI resource and create a model deployment (e.g. `gpt-4o-mini`). Note the endpoint URL and API key.
+
+### 2. Environment Variables
+Set the following variables before running the pipeline or Streamlit app:
+
+```bash
+export AZURE_OPENAI_ENDPOINT="https://<your-resource>.openai.azure.com/"
+export AZURE_OPENAI_API_KEY="<your-key>"
+export AZURE_OPENAI_DEPLOYMENT="gpt-4o-mini"  # or your deployment name
+export AZURE_OPENAI_API_VERSION="2024-02-15-preview"  # optional override
+```
+
+You can place these in a `.env` file and load them with a tool like `direnv` or `dotenv` if preferred.
+
+### 3. Running
+Normal usage (LLM mode active by default):
+```bash
+streamlit run app/streamlit_app.py
+```
+
+If Azure environment variables are missing, the LLM extractor safely returns no fields (mock mode) and the document still processes (fields list will be empty). This allows local development without API calls.
+
+### 4. Hybrid Mode (Future)
+Hybrid (LLM + regex rules) can be enabled later by instantiating `DocumentPipeline(use_rules=True)` in your code. Currently, rules are skipped unless that flag is set. This maintains forward compatibility for adding fallback extraction.
+
+### 5. Cost & Logging
+The module tracks the number of model calls in `processing_meta.model_calls_made`. You can extend it to record token usage and cost once the Azure responses are parsed for usage metadata.
+
+### 6. Extending Fields
+Edit `DEFAULT_FIELDS` in `src/normalization/llm_extractor.py` or pass a custom list when creating `AzureOpenAILLMExtractor`. Each field needs a unique `name` and a short `description` to guide the model.
+
+### 7. Failure Handling
+If the JSON response is malformed, a defensive parser attempts cleanup; otherwise the field list is empty and an error string is stored in metadata for debugging.
+
+---

@@ -8,6 +8,12 @@ This script demonstrates the basic functionality of the document processing pipe
 import sys
 import os
 import json
+try:
+    from dotenv import load_dotenv
+    # Load nearest .env (current working dir or project root)
+    load_dotenv()
+except Exception:
+    pass  # Safe to ignore if not installed yet
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,7 +33,7 @@ def test_pipeline():
         print("✅ Pipeline initialized successfully")
         
         # Test document path
-        test_doc_path = "test_documents/sample_invoice.txt"
+        test_doc_path = "test_documents/Srilankan_inv.pdf"
         
         if not os.path.exists(test_doc_path):
             print(f"❌ Test document not found: {test_doc_path}")
@@ -45,7 +51,7 @@ def test_pipeline():
         print(f"File Type: {document.ingest_metadata.file_type}")
         print(f"Processing Time: {document.ingest_metadata.processing_time_seconds:.2f} seconds")
         print(f"Signature ID: {document.processing_meta.signature_id}")
-        print(f"Fields Extracted: {len(document.key_values)}")
+        print(f"Fields Extracted (LLM): {len(document.key_values)}")
         
         # Display extracted fields
         if document.key_values:
@@ -53,6 +59,9 @@ def test_pipeline():
             print("-" * 30)
             for kv in document.key_values:
                 print(f"  {kv.key}: {kv.value} (confidence: {kv.confidence:.2f})")
+        else:
+            print("\n4. No fields extracted. If you expect values, ensure Azure OpenAI env vars are set: "
+                  "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT")
         
         # Display sections
         print(f"\n5. Document Sections: {len(document.sections)}")

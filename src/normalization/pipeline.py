@@ -11,6 +11,7 @@ from pathlib import Path
 from .schema import NormalizedDocument, Section, Chunk, calculate_coverage_stats
 from .signatures import SignatureManager
 from .rules_engine import RulesEngine
+from .llm_extractor import AzureOpenAILLMExtractor
 from .extractors.pdf_extractor import PDFExtractor
 from .extractors.text_extractor import TextExtractor
 from .extractors.email_extractor import EmailExtractor
@@ -20,108 +21,100 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentPipeline:
-    """Main document processing pipeline."""
-    
-    def __init__(self, 
+    """Main document processing pipeline (LLM extraction focused)."""
+
+    def __init__(self,
                  rules_dir: str = "rules",
-                 signatures_dir: str = "signatures", 
-                 outputs_dir: str = "outputs"):
-        """
-        Initialize the document pipeline.
-        
+                 signatures_dir: str = "signatures",
+                 outputs_dir: str = "outputs",
+                 use_rules: bool = False):
+        """Initialize the pipeline.
+
         Args:
             rules_dir: Directory containing rule files
             signatures_dir: Directory for signature storage
             outputs_dir: Directory for normalized document outputs
+            use_rules: Whether to also run legacy regex rules (future hybrid)
         """
         self.rules_dir = rules_dir
         self.signatures_dir = signatures_dir
         self.outputs_dir = outputs_dir
-        
+        self.use_rules = use_rules
+
         # Ensure directories exist
-        os.makedirs(rules_dir, exist_ok=True)
-        os.makedirs(signatures_dir, exist_ok=True)
-        os.makedirs(outputs_dir, exist_ok=True)
-        
-        # Initialize components
-        self.signature_manager = SignatureManager(signatures_dir)
-        self.rules_engine = RulesEngine(rules_dir)
-        self.repository = DocumentRepository(outputs_dir)
-        
-        # Initialize extractors
+        os.makedirs(self.rules_dir, exist_ok=True)
+        os.makedirs(self.signatures_dir, exist_ok=True)
+        os.makedirs(self.outputs_dir, exist_ok=True)
+
+        # Core components
+        self.signature_manager = SignatureManager(self.signatures_dir)
+        self.rules_engine = RulesEngine(self.rules_dir)
+        self.llm_extractor = AzureOpenAILLMExtractor()
+        self.repository = DocumentRepository(self.outputs_dir)
+
+        # File extractors
         self.pdf_extractor = PDFExtractor()
         self.text_extractor = TextExtractor()
         self.email_extractor = EmailExtractor()
-        
-        logger.info("Pipeline initialized successfully")
-    
+
+        logger.info("Pipeline initialized (LLM mode %s)" % ("+ rules" if self.use_rules else "only"))
+
     def process_document(self, file_path: str) -> Tuple[NormalizedDocument, str]:
-        """
-        Process a document through the complete pipeline.
-        
-        Args:
-            file_path: Path to the document file
-            
-        Returns:
-            Tuple of (normalized_document, processing_log)
-        """
+        """Process a single document end-to-end."""
         start_time = time.time()
-        processing_log = []
-        
-        try:
-            # Read file
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-            
-            file_size = len(file_content)
-            filename = os.path.basename(file_path)
-            file_type = self._detect_file_type(filename)
-            
-            processing_log.append(f"Processing {filename} ({file_type}, {file_size} bytes)")
-            
-            # Create normalized document
-            document = NormalizedDocument.create(filename, file_size, file_type, file_content)
-            
-            # Stage 1: Extract content
-            text, layout_elements = self._extract_content(file_path, file_type)
-            processing_log.append(f"Extracted {len(text)} characters from {len(layout_elements)} layout elements")
-            
-            # Stage 2: Process signature
-            signature, similarity_score = self._process_signature(layout_elements, filename)
-            document.processing_meta.signature_id = signature.signature_id
-            document.processing_meta.signature_match_score = similarity_score
-            processing_log.append(f"Signature: {signature.signature_id} (similarity: {similarity_score:.2f})")
-            
-            # Stage 3: Apply rules
-            extracted_values, rules_applied = self._apply_rules(text, signature.signature_id)
-            document.key_values.extend(extracted_values)
-            document.processing_meta.rules_applied = rules_applied
-            processing_log.append(f"Extracted {len(extracted_values)} fields using rules: {rules_applied}")
-            
-            # Stage 4: Create sections and chunks
-            self._finalize_document(document, text, layout_elements, file_type)
-            
-            # Calculate final stats
-            processing_time = time.time() - start_time
-            document.ingest_metadata.processing_time_seconds = processing_time
-            coverage_stats = calculate_coverage_stats(document)
-            document.processing_meta.coverage_stats = coverage_stats
-            
-            # Save document
-            save_path = self.repository.save_document(document)
-            
-            processing_log.append(f"Processing completed in {processing_time:.2f}s")
-            processing_log.append(f"Saved to: {save_path}")
-            
-            logger.info(f"Processed document {document.doc_id} successfully")
-            
-            return document, "\n".join(processing_log)
-            
-        except Exception as e:
-            error_msg = f"Error processing document: {e}"
-            processing_log.append(error_msg)
-            logger.error(error_msg)
-            raise
+        log_lines: List[str] = []
+
+        # --- Load file ---
+        with open(file_path, 'rb') as f:
+            content_bytes = f.read()
+        file_size = len(content_bytes)
+        filename = os.path.basename(file_path)
+        file_type = self._detect_file_type(filename)
+        log_lines.append(f"Processing {filename} ({file_type}, {file_size} bytes)")
+
+        # --- Create normalized doc container ---
+        document = NormalizedDocument.create(filename, file_size, file_type, content_bytes)
+
+        # --- Content extraction ---
+        text, layout_elements = self._extract_content(file_path, file_type)
+        log_lines.append(f"Extracted {len(text)} chars from {len(layout_elements)} layout elements")
+
+        # --- Signature processing ---
+        signature, similarity = self._process_signature(layout_elements, filename)
+        document.processing_meta.signature_id = signature.signature_id
+        document.processing_meta.signature_match_score = similarity
+        log_lines.append(f"Signature {signature.signature_id} (similarity {similarity:.2f})")
+
+        # --- LLM Extraction (primary) ---
+        kvs, llm_meta = self.llm_extractor.extract(text)
+        document.key_values.extend(kvs)
+        document.processing_meta.model_calls_made += 1 if kvs else 0
+        log_lines.append(
+            f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
+        )
+
+        # Optional legacy rules (disabled by default)
+        if self.use_rules:
+            rule_kvs, applied = self._apply_rules(text, signature.signature_id)
+            document.key_values.extend(rule_kvs)
+            document.processing_meta.rules_applied = applied
+            log_lines.append(f"Rules added {len(rule_kvs)} fields: {applied}")
+        else:
+            document.processing_meta.rules_applied = []
+
+        # --- Sections & chunks ---
+        self._finalize_document(document, text, layout_elements, file_type)
+
+        # --- Stats ---
+        processing_time = time.time() - start_time
+        document.ingest_metadata.processing_time_seconds = processing_time
+        document.processing_meta.coverage_stats = calculate_coverage_stats(document)
+
+        save_path = self.repository.save_document(document)
+        log_lines.append(f"Saved to {save_path}")
+        log_lines.append(f"Completed in {processing_time:.2f}s")
+        logger.info(f"Processed document {document.doc_id} in {processing_time:.2f}s")
+        return document, "\n".join(log_lines)
     
     def _detect_file_type(self, filename: str) -> str:
         """Detect file type from filename."""

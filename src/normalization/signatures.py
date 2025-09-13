@@ -66,8 +66,13 @@ class SignatureManager:
                     with open(os.path.join(self.signatures_dir, filename), 'r') as f:
                         data = json.load(f)
                         
-                    # Convert token data back to SignatureToken objects
-                    tokens = [SignatureToken(**token_data) for token_data in data['tokens']]
+                    # Convert token data back to SignatureToken objects, ensuring bbox_bucket is a tuple
+                    tokens = []
+                    for token_data in data['tokens']:
+                        bbox_bucket = token_data.get('bbox_bucket')
+                        if isinstance(bbox_bucket, list):
+                            token_data['bbox_bucket'] = tuple(bbox_bucket)
+                        tokens.append(SignatureToken(**token_data))
                     
                     signature = DocumentSignature(
                         signature_id=data['signature_id'],
@@ -175,11 +180,14 @@ class SignatureManager:
         set2 = set()
         
         for token in tokens1:
-            token_tuple = (token.page, token.element_type, token.bbox_bucket, token.token_count)
+            # Ensure bbox_bucket is hashable tuple
+            bbox_bucket = tuple(token.bbox_bucket) if isinstance(token.bbox_bucket, (list, tuple)) else token.bbox_bucket
+            token_tuple = (token.page, token.element_type, bbox_bucket, token.token_count)
             set1.add(token_tuple)
-        
+
         for token in tokens2:
-            token_tuple = (token.page, token.element_type, token.bbox_bucket, token.token_count)
+            bbox_bucket = tuple(token.bbox_bucket) if isinstance(token.bbox_bucket, (list, tuple)) else token.bbox_bucket
+            token_tuple = (token.page, token.element_type, bbox_bucket, token.token_count)
             set2.add(token_tuple)
         
         # Calculate Jaccard similarity

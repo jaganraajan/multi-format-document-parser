@@ -5,7 +5,7 @@ Simple rule-based extraction engine using regex patterns.
 import re
 import yaml
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import os
 
 from .schema import KeyValue
@@ -151,3 +151,130 @@ class RulesEngine:
             "signature_rule_sets": len(self.signature_rules),
             "global_required_fields": len([r for r in self.global_rules if r.get('required')]),
         }
+
+    def learn_signature_rules(self, signature_id: str, key_values: List[KeyValue], text: str) -> int:
+        """Learn and store new signature-specific rules from successful extractions."""
+        if not signature_id or not key_values:
+            return 0
+        
+        # Ensure signature overrides directory exists
+        signature_rules_dir = os.path.join(self.rules_dir, "signature_overrides")
+        os.makedirs(signature_rules_dir, exist_ok=True)
+        
+        # Load existing signature rules
+        signature_file = os.path.join(signature_rules_dir, f"{signature_id}.yml")
+        existing_rules = []
+        version = 1
+        
+        if os.path.exists(signature_file):
+            try:
+                with open(signature_file, 'r') as f:
+                    rules_config = yaml.safe_load(f) or {}
+                    existing_rules = rules_config.get('rules', [])
+                    version = rules_config.get('version', 1)
+            except Exception as e:
+                logger.error(f"Error loading existing signature rules for {signature_id}: {e}")
+        
+        # Get field names that already have rules
+        existing_fields = {rule.get('field_name') for rule in existing_rules if rule.get('field_name')}
+        
+        # Learn rules for new fields
+        new_rules = []
+        for kv in key_values:
+            if kv.key not in existing_fields and kv.value and str(kv.value).strip():
+                pattern = self._synthesize_pattern(kv.key, kv.value, text)
+                if pattern:
+                    new_rule = {
+                        'field_name': kv.key,
+                        'pattern': pattern,
+                        'confidence': 0.8,  # Baseline confidence for learned rules
+                        'required': False,  # New rules start as optional
+                        'learned_from': 'llm_extraction'
+                    }
+                    new_rules.append(new_rule)
+                    logger.info(f"Learned new rule for {kv.key}: {pattern}")
+        
+        # If no new rules learned, return
+        if not new_rules:
+            return 0
+        
+        # Combine existing and new rules
+        all_rules = existing_rules + new_rules
+        
+        # Update version
+        version += 1
+        
+        # Save updated rules file
+        rules_config = {
+            'version': version,
+            'description': f'Signature-specific rules for {signature_id} (auto-learned)',
+            'rules': all_rules
+        }
+        
+        try:
+            with open(signature_file, 'w') as f:
+                yaml.dump(rules_config, f, default_flow_style=False, sort_keys=False)
+            
+            # Update in-memory rules
+            self.signature_rules[signature_id] = all_rules
+            
+            logger.info(f"Saved {len(new_rules)} new rules for signature {signature_id} (version {version})")
+            return len(new_rules)
+            
+        except Exception as e:
+            logger.error(f"Error saving signature rules for {signature_id}: {e}")
+            return 0
+
+    def _synthesize_pattern(self, field_name: str, value: Any, text: str) -> Optional[str]:
+        """Synthesize a regex pattern for a field based on its value and context."""
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+        
+        # Escape the literal value for regex
+        escaped_value = re.escape(value_str)
+        
+        # Try to find a label in the text (up to 25 chars before the value)
+        value_pos = text.find(value_str)
+        if value_pos > 0:
+            # Look for potential label before the value
+            start_pos = max(0, value_pos - 25)
+            prefix_text = text[start_pos:value_pos].lower()
+            
+            # Extract potential label words (alphanumerics, spaces, common separators)
+            label_match = re.search(r'([a-z0-9\s_-]+)\s*[:#-]?\s*$', prefix_text)
+            if label_match:
+                label_words = label_match.group(1).strip()
+                if label_words and len(label_words) > 2:
+                    # Create pattern with label context
+                    label_pattern = re.escape(label_words)
+                    if self._is_numeric_or_money(value_str):
+                        # For numeric/money values, use more specific pattern
+                        return f"(?i)(?:{label_pattern})\\s*[:#-]?\\s*([0-9.,]+)"
+                    else:
+                        # General alphanumeric pattern
+                        return f"(?i)(?:{label_pattern})\\s*[:#-]?\\s*([A-Z0-9._@/-]+)"
+        
+        # Fallback patterns based on value type
+        if self._is_numeric_or_money(value_str):
+            # For numeric values, create a direct match pattern
+            return f"(?i)\\b{escaped_value}\\b"
+        elif '@' in value_str:
+            # Email pattern
+            return r"(?i)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
+        elif len(value_str) > 10:
+            # Long strings - use direct match
+            return f"(?i)\\b{escaped_value}\\b"
+        else:
+            # General pattern for short values
+            return f"(?i)\\b{escaped_value}\\b"
+
+    def _is_numeric_or_money(self, value_str: str) -> bool:
+        """Check if a value is numeric or money-related."""
+        # Remove common currency and formatting characters
+        cleaned = re.sub(r'[$,\s]', '', value_str)
+        try:
+            float(cleaned)
+            return True
+        except ValueError:
+            return False

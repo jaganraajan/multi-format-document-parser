@@ -175,12 +175,19 @@ def display_processing_results():
     for result in st.session_state.processed_docs:
         if result['status'] == 'success':
             coverage = result.get('coverage_stats', {})
+            # Get LLM and confidence info from document
+            doc = result.get('document')
+            llm_used = "Yes" if doc and doc.processing_meta.llm_invoked else "No"
+            doc_confidence = doc.processing_meta.document_confidence if doc else 0.0
+            
             data.append({
                 'File': result['filename'],
                 'Doc ID': result['doc_id'],
                 'Signature': result['signature_id'][:8] + '...' if result['signature_id'] else 'N/A',
                 'Match Score': f"{result['signature_match']:.2f}",
                 'Fields': result['fields_extracted'],
+                'LLM Used': llm_used,
+                'Doc Confidence': f"{doc_confidence:.1%}",
                 'Rule Coverage': f"{coverage.get('rule_coverage', 0):.1%}",
                 'Time (s)': f"{result['processing_time']:.1f}",
                 'Status': '✅ Success'
@@ -192,6 +199,8 @@ def display_processing_results():
                 'Signature': 'N/A',
                 'Match Score': 'N/A',
                 'Fields': 'N/A',
+                'LLM Used': 'N/A',
+                'Doc Confidence': 'N/A',
                 'Rule Coverage': 'N/A',
                 'Time (s)': 'N/A',
                 'Status': f"❌ {result.get('error', 'Error')}"
@@ -222,6 +231,41 @@ def display_document_details(result: Dict[str, Any]):
     """Display detailed information for a selected document."""
     document = result['document']
     
+    # Display key metrics prominently at the top
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "LLM Invoked",
+            "Yes" if document.processing_meta.llm_invoked else "No",
+            delta=None
+        )
+    
+    with col2:
+        st.metric(
+            "Document Confidence",
+            f"{document.processing_meta.document_confidence:.1%}",
+            delta=None
+        )
+    
+    with col3:
+        gating_decision = document.processing_meta.gating_decision or "N/A"
+        st.metric(
+            "Gating Decision",
+            gating_decision.replace("_", " ").title(),
+            delta=None
+        )
+    
+    with col4:
+        required_coverage = len([kv for kv in document.key_values if kv.key in document.processing_meta.required_fields])
+        total_required = len(document.processing_meta.required_fields)
+        coverage_text = f"{required_coverage}/{total_required}" if total_required > 0 else "N/A"
+        st.metric(
+            "Required Fields",
+            coverage_text,
+            delta=None
+        )
+    
     # Tabs for different views
     tab1, tab2, tab3, tab4 = st.tabs(["📄 JSON Preview", "📊 Key-Values", "📋 Sections", "📝 Processing Log"])
     
@@ -246,15 +290,20 @@ def display_document_details(result: Dict[str, Any]):
         if document.key_values:
             kv_data = []
             for kv in document.key_values:
+                is_required = kv.key in document.processing_meta.required_fields
                 kv_data.append({
-                    'Field': kv.key,
+                    'Field': kv.key + (" ⭐" if is_required else ""),
                     'Value': str(kv.value),
                     'Confidence': f"{kv.confidence:.2f}",
-                    'Method': kv.extraction_method.title()
+                    'Method': kv.extraction_method.title(),
+                    'Required': "Yes" if is_required else "No"
                 })
             
             kv_df = pd.DataFrame(kv_data)
             st.dataframe(kv_df, use_container_width=True)
+            
+            # Legend
+            st.caption("⭐ indicates required fields")
         else:
             st.info("No key-value pairs extracted")
     
@@ -314,6 +363,9 @@ def document_library_page(pipeline: DocumentPipeline):
         data = []
         for doc in documents:
             coverage = doc.get('coverage_stats', {})
+            llm_used = "Yes" if doc.get('llm_invoked') else "No"
+            doc_confidence = doc.get('document_confidence', 0.0)
+            
             data.append({
                 'File': doc['filename'],
                 'Doc ID': doc['doc_id'],
@@ -321,6 +373,8 @@ def document_library_page(pipeline: DocumentPipeline):
                 'Uploaded': doc['uploaded_at'][:19] if doc.get('uploaded_at') else 'N/A',
                 'Signature': doc.get('signature_id', 'N/A')[:8] + '...' if doc.get('signature_id') else 'N/A',
                 'Fields': doc['key_values_count'],
+                'LLM Used': llm_used,
+                'Doc Confidence': f"{doc_confidence:.1%}",
                 'Coverage': f"{coverage.get('rule_coverage', 0):.1%}",
                 'Size (bytes)': doc['file_size']
             })
@@ -347,7 +401,7 @@ def pipeline_stats_page(pipeline: DocumentPipeline):
         stats = pipeline.get_pipeline_stats()
         
         # Overview metrics
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
@@ -357,14 +411,20 @@ def pipeline_stats_page(pipeline: DocumentPipeline):
         
         with col2:
             st.metric(
-                "Total Signatures",
-                stats['signatures']['total_signatures']
+                "Total LLM Calls",
+                stats['repository']['total_model_calls']
             )
         
         with col3:
             st.metric(
-                "Total Rules",
-                stats['rules']['total_rules']
+                "Avg LLM Calls/Doc",
+                f"{stats['repository']['avg_model_calls_per_doc']:.1f}"
+            )
+        
+        with col4:
+            st.metric(
+                "Avg Doc Confidence",
+                f"{stats['repository']['avg_document_confidence']:.1%}"
             )
         
         # Detailed stats

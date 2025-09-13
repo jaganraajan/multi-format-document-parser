@@ -75,6 +75,10 @@ class DocumentRepository:
                 "total_cost_usd": document.processing_meta.total_cost_usd,
                 "model_calls_made": document.processing_meta.model_calls_made,
                 "coverage_stats": document.processing_meta.coverage_stats,
+                "gating_decision": document.processing_meta.gating_decision,
+                "llm_invoked": document.processing_meta.llm_invoked,
+                "document_confidence": document.processing_meta.document_confidence,
+                "required_fields": document.processing_meta.required_fields,
                 "saved_at": datetime.now().isoformat(),
                 "filepath": filepath,
                 "sections_count": len(document.sections),
@@ -152,12 +156,20 @@ class DocumentRepository:
                 "total_size_bytes": 0,
                 "file_types": {},
                 "avg_cost_per_doc": 0.0,
-                "total_cost": 0.0
+                "total_cost": 0.0,
+                "total_model_calls": 0,
+                "avg_model_calls_per_doc": 0.0,
+                "avg_document_confidence": 0.0
             }
         
         total_documents = len(self.index)
         total_size = sum(doc.get("file_size", 0) for doc in self.index.values())
         total_cost = sum(doc.get("total_cost_usd", 0) for doc in self.index.values())
+        total_model_calls = sum(doc.get("model_calls_made", 0) for doc in self.index.values())
+        
+        # Calculate average document confidence
+        confidences = [doc.get("document_confidence", 0) for doc in self.index.values() if doc.get("document_confidence") is not None]
+        avg_document_confidence = sum(confidences) / len(confidences) if confidences else 0.0
         
         # Count file types
         file_types = {}
@@ -171,7 +183,10 @@ class DocumentRepository:
             "file_types": file_types,
             "avg_cost_per_doc": total_cost / total_documents if total_documents > 0 else 0.0,
             "total_cost": total_cost,
-            "avg_size_bytes": total_size / total_documents if total_documents > 0 else 0
+            "avg_size_bytes": total_size / total_documents if total_documents > 0 else 0,
+            "total_model_calls": total_model_calls,
+            "avg_model_calls_per_doc": total_model_calls / total_documents if total_documents > 0 else 0.0,
+            "avg_document_confidence": avg_document_confidence
         }
     
     def cleanup_old_documents(self, days_to_keep: int = 30):

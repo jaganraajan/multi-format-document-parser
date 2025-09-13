@@ -3,12 +3,14 @@ Main document processing pipeline.
 """
 
 import os
+import re
+import random
 import time
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
-from .schema import NormalizedDocument, Section, Chunk, calculate_coverage_stats
+from .schema import NormalizedDocument, Section, Chunk, KeyValue, calculate_coverage_stats
 from .signatures import SignatureManager
 from .rules_engine import RulesEngine
 from .llm_extractor import AzureOpenAILLMExtractor
@@ -18,6 +20,22 @@ from .extractors.email_extractor import EmailExtractor
 from .storage import DocumentRepository
 
 logger = logging.getLogger(__name__)
+
+# Adaptive hybrid parsing configuration constants
+MIN_CONF_THRESHOLD = 0.75
+LOW_COVERAGE_THRESHOLD = 0.5
+BORDERLINE_RANGE = (0.5, 0.9)
+BORDERLINE_SAMPLING_RATE = 0.30
+RULE_LEARNING_ENABLED = True
+
+# Gating decision constants
+GATING_DECISIONS = {
+    'SKIP_LLM_HIGH_CONF': 'SKIP_LLM_HIGH_CONF',
+    'USED_LLM_LOW_COVERAGE': 'USED_LLM_LOW_COVERAGE', 
+    'USED_LLM_BOOTSTRAP': 'USED_LLM_BOOTSTRAP',
+    'USED_LLM_BORDERLINE_SAMPLED': 'USED_LLM_BORDERLINE_SAMPLED',
+    'SKIP_LLM_BORDERLINE_NOT_SAMPLED': 'SKIP_LLM_BORDERLINE_NOT_SAMPLED'
+}
 
 
 class DocumentPipeline:
@@ -60,7 +78,7 @@ class DocumentPipeline:
         logger.info("Pipeline initialized (LLM mode %s)" % ("+ rules" if self.use_rules else "only"))
 
     def process_document(self, file_path: str) -> Tuple[NormalizedDocument, str]:
-        """Process a single document end-to-end."""
+        """Process a single document end-to-end with adaptive hybrid parsing."""
         start_time = time.time()
         log_lines: List[str] = []
 
@@ -85,22 +103,58 @@ class DocumentPipeline:
         document.processing_meta.signature_match_score = similarity
         log_lines.append(f"Signature {signature.signature_id} (similarity {similarity:.2f})")
 
-        # --- LLM Extraction (primary) ---
-        kvs, llm_meta = self.llm_extractor.extract(text)
-        document.key_values.extend(kvs)
-        document.processing_meta.model_calls_made += 1 if kvs else 0
-        log_lines.append(
-            f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
-        )
+        # --- Rules-first extraction (hybrid approach) ---
+        rule_kvs, rules_applied = self._apply_rules(text, signature.signature_id)
+        document.key_values.extend(rule_kvs)
+        document.processing_meta.rules_applied = rules_applied
+        log_lines.append(f"Rules extracted {len(rule_kvs)} fields from {rules_applied}")
 
-        # Optional legacy rules (disabled by default)
-        if self.use_rules:
-            rule_kvs, applied = self._apply_rules(text, signature.signature_id)
-            document.key_values.extend(rule_kvs)
-            document.processing_meta.rules_applied = applied
-            log_lines.append(f"Rules added {len(rule_kvs)} fields: {applied}")
+        # --- Compute required fields and coverage ---
+        required_fields = self.rules_engine.get_required_fields(signature.signature_id)
+        document.processing_meta.required_fields = required_fields
+        
+        coverage_ratio, avg_rule_confidence = self._compute_coverage_and_confidence(document.key_values, required_fields)
+        log_lines.append(f"Coverage: {coverage_ratio:.2f} ({len([kv for kv in document.key_values if kv.key in required_fields])}/{len(required_fields)} required fields), Avg confidence: {avg_rule_confidence:.2f}")
+
+        # --- Gating logic for LLM invocation ---
+        gating_decision, should_invoke_llm, rationale = self._make_gating_decision(
+            coverage_ratio, avg_rule_confidence, signature.signature_id, required_fields, document.key_values
+        )
+        document.processing_meta.gating_decision = gating_decision
+        document.processing_meta.llm_invoked = should_invoke_llm
+        log_lines.append(f"Gating decision: {gating_decision} - {rationale}")
+
+        # --- Conditional LLM extraction ---
+        if should_invoke_llm:
+            llm_kvs, llm_meta = self.llm_extractor.extract(text)
+            document.processing_meta.model_calls_made += 1 if llm_kvs else 0
+            
+            # Merge LLM key-values (avoid duplicates; rule values win unless empty)
+            merged_kvs = self._merge_key_values(document.key_values, llm_kvs)
+            document.key_values = merged_kvs
+            
+            log_lines.append(f"LLM extracted {len(llm_kvs)} fields, merged to {len(document.key_values)} total")
+            
+            # Learn signature-specific rules if enabled
+            if RULE_LEARNING_ENABLED and llm_kvs:
+                self._learn_signature_rules(signature.signature_id, llm_kvs, text, log_lines)
         else:
-            document.processing_meta.rules_applied = []
+            log_lines.append("LLM invocation skipped by gating logic")
+
+        # --- Compute final confidences ---
+        self._compute_final_confidences(document.key_values)
+        document.processing_meta.document_confidence = self._compute_document_confidence(document.key_values, required_fields)
+        log_lines.append(f"Document confidence: {document.processing_meta.document_confidence:.2f}")
+
+        # --- Legacy compatibility for existing functionality ---
+        if not self.use_rules:
+            # If rules are disabled, ensure we still call LLM for backward compatibility
+            if not should_invoke_llm:
+                llm_kvs, llm_meta = self.llm_extractor.extract(text)
+                document.key_values.extend(llm_kvs)
+                document.processing_meta.model_calls_made += 1 if llm_kvs else 0
+                document.processing_meta.llm_invoked = True
+                log_lines.append(f"Legacy LLM call: {len(llm_kvs)} fields extracted")
 
         # --- Sections & chunks ---
         self._finalize_document(document, text, layout_elements, file_type)
@@ -203,6 +257,121 @@ class DocumentPipeline:
             chunks.append(chunk)
         
         return chunks
+
+    def _compute_coverage_and_confidence(self, key_values: List[KeyValue], required_fields: List[str]) -> Tuple[float, float]:
+        """Compute coverage ratio and average rule confidence."""
+        if not required_fields:
+            return 1.0, 1.0  # No required fields means full coverage
+            
+        extracted_required = [kv for kv in key_values if kv.key in required_fields]
+        coverage_ratio = len(extracted_required) / len(required_fields)
+        
+        # Compute average confidence of rule-based extractions
+        rule_confidences = [kv.confidence for kv in key_values if kv.extraction_method == "rule"]
+        avg_rule_confidence = sum(rule_confidences) / len(rule_confidences) if rule_confidences else 0.0
+        
+        return coverage_ratio, avg_rule_confidence
+
+    def _make_gating_decision(self, coverage_ratio: float, avg_confidence: float, 
+                             signature_id: str, required_fields: List[str], 
+                             extracted_kvs: List[KeyValue]) -> Tuple[str, bool, str]:
+        """Make gating decision for LLM invocation."""
+        
+        # Check if this is a new signature (bootstrap case)
+        signature_rules = self.rules_engine.signature_rules.get(signature_id, [])
+        if not signature_rules:
+            return (GATING_DECISIONS['USED_LLM_BOOTSTRAP'], True, 
+                   "New signature with no specific rules - bootstrapping with LLM")
+        
+        # High confidence and full coverage - skip LLM
+        if coverage_ratio >= 1.0 and avg_confidence >= MIN_CONF_THRESHOLD:
+            return (GATING_DECISIONS['SKIP_LLM_HIGH_CONF'], False,
+                   f"High coverage ({coverage_ratio:.2f}) and confidence ({avg_confidence:.2f}) - skipping LLM")
+        
+        # Low coverage or missing critical fields - use LLM
+        if coverage_ratio < LOW_COVERAGE_THRESHOLD:
+            return (GATING_DECISIONS['USED_LLM_LOW_COVERAGE'], True,
+                   f"Low coverage ({coverage_ratio:.2f}) below threshold ({LOW_COVERAGE_THRESHOLD}) - using LLM")
+        
+        # Borderline range - probabilistic sampling
+        if BORDERLINE_RANGE[0] <= coverage_ratio < BORDERLINE_RANGE[1]:
+            if random.random() < BORDERLINE_SAMPLING_RATE:
+                return (GATING_DECISIONS['USED_LLM_BORDERLINE_SAMPLED'], True,
+                       f"Borderline coverage ({coverage_ratio:.2f}) - sampled for LLM ({BORDERLINE_SAMPLING_RATE:.0%} rate)")
+            else:
+                return (GATING_DECISIONS['SKIP_LLM_BORDERLINE_NOT_SAMPLED'], False,
+                       f"Borderline coverage ({coverage_ratio:.2f}) - not sampled for LLM")
+        
+        # Default to skipping LLM
+        return (GATING_DECISIONS['SKIP_LLM_HIGH_CONF'], False,
+               f"Coverage ({coverage_ratio:.2f}) and confidence ({avg_confidence:.2f}) sufficient - skipping LLM")
+
+    def _merge_key_values(self, rule_kvs: List[KeyValue], llm_kvs: List[KeyValue]) -> List[KeyValue]:
+        """Merge rule and LLM key-values, with rule values taking precedence."""
+        merged = {}
+        
+        # Add rule-based values first (these take precedence)
+        for kv in rule_kvs:
+            merged[kv.key] = kv
+        
+        # Add LLM values only if not already present or if rule value is empty
+        for kv in llm_kvs:
+            if kv.key not in merged or not merged[kv.key].value:
+                merged[kv.key] = kv
+            elif kv.key in merged and merged[kv.key].extraction_method == "rule":
+                # If LLM extracted the same value as a high-confidence rule, reduce LLM confidence
+                if str(merged[kv.key].value).lower() == str(kv.value).lower() and merged[kv.key].confidence > 0.8:
+                    kv.confidence = 0.40  # Reduce confidence for duplicate value
+        
+        return list(merged.values())
+
+    def _learn_signature_rules(self, signature_id: str, llm_kvs: List[KeyValue], 
+                              text: str, log_lines: List[str]):
+        """Learn new signature-specific rules from successful LLM extractions."""
+        try:
+            learned_count = self.rules_engine.learn_signature_rules(signature_id, llm_kvs, text)
+            if learned_count > 0:
+                log_lines.append(f"Learned {learned_count} new rules for signature {signature_id}")
+        except Exception as e:
+            logger.warning(f"Failed to learn rules for signature {signature_id}: {e}")
+
+    def _compute_final_confidences(self, key_values: List[KeyValue]):
+        """Compute final confidence scores with heuristic adjustments."""
+        for kv in key_values:
+            if kv.extraction_method == "rule":
+                # Rule confidence adjustments
+                base_confidence = kv.confidence
+                
+                # +0.05 if value length > 5 (bounded)
+                if len(str(kv.value)) > 5:
+                    base_confidence += 0.05
+                
+                # -0.05 if pattern contains alternation (check if this was from a pattern with |)
+                # Note: This would require storing pattern info, simplified for now
+                
+                # Clamp to [0.0, 0.99]
+                kv.confidence = max(0.0, min(0.99, base_confidence))
+                
+            elif kv.extraction_method == "model":
+                # Model confidence defaults to existing or 0.70
+                if kv.confidence == 0.0:
+                    kv.confidence = 0.70
+
+    def _compute_document_confidence(self, key_values: List[KeyValue], required_fields: List[str]) -> float:
+        """Compute aggregate document confidence as weighted average."""
+        if not key_values:
+            return 0.0
+        
+        total_weighted_confidence = 0.0
+        total_weight = 0.0
+        
+        for kv in key_values:
+            # Required fields get weight 1.5, optional fields get weight 1.0
+            weight = 1.5 if kv.key in required_fields else 1.0
+            total_weighted_confidence += kv.confidence * weight
+            total_weight += weight
+        
+        return total_weighted_confidence / total_weight if total_weight > 0 else 0.0
     
     def process_batch(self, file_paths: List[str]) -> List[Tuple[str, Optional[str]]]:
         """

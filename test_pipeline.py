@@ -27,13 +27,13 @@ def test_pipeline():
     print("=" * 50)
     
     try:
-        # Initialize pipeline
+        # Initialize pipeline in hybrid mode to test gating logic
         print("1. Initializing pipeline...")
-        pipeline = DocumentPipeline()
-        print("✅ Pipeline initialized successfully")
+        pipeline = DocumentPipeline(use_rules=True)
+        print("✅ Pipeline initialized successfully (hybrid mode enabled)")
         
         # Test document path
-        test_doc_path = "test_documents/Srilankan_inv.pdf"
+        test_doc_path = "test_documents/sample_invoice.txt"
         
         if not os.path.exists(test_doc_path):
             print(f"❌ Test document not found: {test_doc_path}")
@@ -51,30 +51,51 @@ def test_pipeline():
         print(f"File Type: {document.ingest_metadata.file_type}")
         print(f"Processing Time: {document.ingest_metadata.processing_time_seconds:.2f} seconds")
         print(f"Signature ID: {document.processing_meta.signature_id}")
-        print(f"Fields Extracted (LLM): {len(document.key_values)}")
         
+        # Display gating decision and LLM usage
+        print(f"\n4. Gating Decision & LLM Usage:")
+        print("-" * 30)
+        print(f"Gating Decision: {document.processing_meta.gating_decision}")
+        print(f"LLM Invoked: {'Yes' if document.processing_meta.llm_invoked else 'No'}")
+        print(f"Model Calls Made: {document.processing_meta.model_calls_made}")
+        
+        # Display confidence metrics
+        print(f"\n5. Confidence Metrics:")
+        print("-" * 30)
+        print(f"Document Confidence: {document.processing_meta.document_confidence:.2%}")
+        print(f"Required Fields: {len(document.processing_meta.required_fields)}")
+        print(f"Required Fields List: {document.processing_meta.required_fields}")
+        
+        # Calculate required field coverage
+        extracted_required = [kv for kv in document.key_values if kv.key in document.processing_meta.required_fields]
+        coverage_ratio = len(extracted_required) / len(document.processing_meta.required_fields) if document.processing_meta.required_fields else 1.0
+        print(f"Required Field Coverage: {coverage_ratio:.2%} ({len(extracted_required)}/{len(document.processing_meta.required_fields)})")
+        
+        print(f"Fields Extracted Total: {len(document.key_values)}")
+
         # Display extracted fields
         if document.key_values:
-            print("\n4. Extracted Key-Value Pairs:")
+            print("\n6. Extracted Key-Value Pairs:")
             print("-" * 30)
             for kv in document.key_values:
-                print(f"  {kv.key}: {kv.value} (confidence: {kv.confidence:.2f})")
+                required_marker = " ⭐" if kv.key in document.processing_meta.required_fields else ""
+                print(f"  {kv.key}{required_marker}: {kv.value} (confidence: {kv.confidence:.2f}, method: {kv.extraction_method})")
         else:
-            print("\n4. No fields extracted. If you expect values, ensure Azure OpenAI env vars are set: "
+            print("\n6. No fields extracted. If you expect values, ensure Azure OpenAI env vars are set: "
                   "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT")
         
         # Display sections
-        print(f"\n5. Document Sections: {len(document.sections)}")
+        print(f"\n7. Document Sections: {len(document.sections)}")
         for i, section in enumerate(document.sections):
             print(f"  Section {i+1}: {section.title}")
         
         # Display processing log
-        print("\n6. Processing Log:")
+        print("\n8. Processing Log:")
         print("-" * 30)
         print(processing_log)
         
         # Get pipeline stats
-        print("\n7. Pipeline Statistics:")
+        print("\n9. Pipeline Statistics:")
         print("-" * 30)
         stats = pipeline.get_pipeline_stats()
         print(json.dumps(stats, indent=2, default=str))

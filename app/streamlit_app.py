@@ -40,14 +40,28 @@ if 'pipeline' not in st.session_state:
     st.session_state.pipeline = None
 if 'processed_docs' not in st.session_state:
     st.session_state.processed_docs = []
+if 'enable_llm' not in st.session_state:
+    st.session_state.enable_llm = False  # Default to pure local mode
+if 'enable_di' not in st.session_state:
+    st.session_state.enable_di = False   # Default to pure local mode
 
 
 def initialize_pipeline():
     """Initialize the document pipeline."""
-    if st.session_state.pipeline is None:
+    # Check if pipeline needs to be recreated due to toggle changes
+    needs_recreation = (
+        st.session_state.pipeline is None or
+        getattr(st.session_state.pipeline, 'enable_llm', True) != st.session_state.enable_llm or
+        getattr(st.session_state.pipeline, 'enable_di', True) != st.session_state.enable_di
+    )
+    
+    if needs_recreation:
         with st.spinner("Initializing pipeline..."):
             try:
-                st.session_state.pipeline = DocumentPipeline()
+                st.session_state.pipeline = DocumentPipeline(
+                    enable_llm=st.session_state.enable_llm,
+                    enable_di=st.session_state.enable_di
+                )
                 st.success("Pipeline initialized successfully!")
             except Exception as e:
                 st.error(f"Error initializing pipeline: {e}")
@@ -86,6 +100,42 @@ def main():
 def document_upload_page(pipeline: DocumentPipeline):
     """Document upload and processing page."""
     st.header("📤 Document Upload & Processing")
+    
+    # AI Feature Toggles
+    st.subheader("🎛️ AI Processing Options")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        llm_toggle = st.checkbox(
+            "Use Azure OpenAI LLM",
+            value=st.session_state.enable_llm,
+            help="Enable LLM-based field extraction using Azure OpenAI"
+        )
+    
+    with col2:
+        di_toggle = st.checkbox(
+            "Use Azure Document Intelligence Fallback",
+            value=st.session_state.enable_di,
+            help="Enable Azure Document Intelligence as fallback for PDFs when LLM produces no fields"
+        )
+    
+    # Update session state if toggles changed
+    if llm_toggle != st.session_state.enable_llm or di_toggle != st.session_state.enable_di:
+        st.session_state.enable_llm = llm_toggle
+        st.session_state.enable_di = di_toggle
+        st.rerun()  # Rerun to recreate pipeline with new settings
+    
+    # Processing mode indicator
+    if not st.session_state.enable_llm and not st.session_state.enable_di:
+        st.info("🔧 **Pure Local Mode**: Only local parsing, no external AI calls")
+    elif st.session_state.enable_llm and not st.session_state.enable_di:
+        st.info("🤖 **LLM Only Mode**: Azure OpenAI extraction enabled")
+    elif st.session_state.enable_llm and st.session_state.enable_di:
+        st.info("🚀 **LLM + DI Mode**: Azure OpenAI with Document Intelligence fallback")
+    elif not st.session_state.enable_llm and st.session_state.enable_di:
+        st.info("📄 **DI Only Mode**: Only Document Intelligence for PDFs after local extraction")
+    
+    st.markdown("---")
     
     # File uploader
     uploaded_files = st.file_uploader(
@@ -135,6 +185,7 @@ def process_documents(pipeline: DocumentPipeline, uploaded_files):
                     'signature_id': document.processing_meta.signature_id,
                     'signature_match': document.processing_meta.signature_match_score,
                     'fields_extracted': len(document.key_values),
+                    'model_calls_made': document.processing_meta.model_calls_made,
                     'processing_time': document.ingest_metadata.processing_time_seconds,
                     'coverage_stats': document.processing_meta.coverage_stats,
                     'processing_log': processing_log,
@@ -181,6 +232,7 @@ def display_processing_results():
                 'Signature': result['signature_id'][:8] + '...' if result['signature_id'] else 'N/A',
                 'Match Score': f"{result['signature_match']:.2f}",
                 'Fields': result['fields_extracted'],
+                'LLM Calls': result.get('model_calls_made', 0),
                 'Rule Coverage': f"{coverage.get('rule_coverage', 0):.1%}",
                 'Time (s)': f"{result['processing_time']:.1f}",
                 'Status': '✅ Success'
@@ -192,6 +244,7 @@ def display_processing_results():
                 'Signature': 'N/A',
                 'Match Score': 'N/A',
                 'Fields': 'N/A',
+                'LLM Calls': 'N/A',
                 'Rule Coverage': 'N/A',
                 'Time (s)': 'N/A',
                 'Status': f"❌ {result.get('error', 'Error')}"

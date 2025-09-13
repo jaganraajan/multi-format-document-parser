@@ -28,7 +28,9 @@ class DocumentPipeline:
                  rules_dir: str = "rules",
                  signatures_dir: str = "signatures",
                  outputs_dir: str = "outputs",
-                 use_rules: bool = False):
+                 use_rules: bool = False,
+                 enable_llm: bool = True,
+                 enable_di: bool = True):
         """Initialize the pipeline.
 
         Args:
@@ -36,11 +38,15 @@ class DocumentPipeline:
             signatures_dir: Directory for signature storage
             outputs_dir: Directory for normalized document outputs
             use_rules: Whether to also run legacy regex rules (future hybrid)
+            enable_llm: Whether to enable Azure OpenAI LLM extraction
+            enable_di: Whether to enable Azure Document Intelligence fallback
         """
         self.rules_dir = rules_dir
         self.signatures_dir = signatures_dir
         self.outputs_dir = outputs_dir
         self.use_rules = use_rules
+        self.enable_llm = enable_llm
+        self.enable_di = enable_di
 
         # Ensure directories exist
         os.makedirs(self.rules_dir, exist_ok=True)
@@ -60,10 +66,18 @@ class DocumentPipeline:
         self.email_extractor = EmailExtractor()
 
         logger.info("Pipeline initialized (LLM mode %s)" % ("+ rules" if self.use_rules else "only"))
-        if self.di_extractor.enabled:
-            logger.info("Azure Document Intelligence fallback enabled (model %s)", self.di_extractor.model_id)
+        
+        if self.enable_llm:
+            logger.info("LLM extraction enabled (user toggle: ON)")
         else:
-            logger.info("Azure Document Intelligence fallback disabled (env missing)")
+            logger.info("LLM extraction disabled (user toggle: OFF)")
+            
+        if self.di_extractor.enabled and self.enable_di:
+            logger.info("Azure Document Intelligence fallback enabled (model %s)", self.di_extractor.model_id)
+        elif self.enable_di and not self.di_extractor.enabled:
+            logger.info("Azure Document Intelligence selected but env vars missing")
+        else:
+            logger.info("Azure Document Intelligence fallback disabled (user toggle: OFF)")
 
     def process_document(self, file_path: str) -> Tuple[NormalizedDocument, str]:
         """Process a single document end-to-end."""
@@ -92,17 +106,24 @@ class DocumentPipeline:
         log_lines.append(f"Signature {signature.signature_id} (similarity {similarity:.2f})")
 
         # --- LLM Extraction (primary) ---
-        kvs, llm_meta = self.llm_extractor.extract(text)
-        document.key_values.extend(kvs)
-        document.processing_meta.model_calls_made += 1 if kvs else 0
-        log_lines.append(
-            f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
-        )
+        if self.enable_llm and self.llm_extractor.enabled:
+            kvs, llm_meta = self.llm_extractor.extract(text)
+            document.key_values.extend(kvs)
+            document.processing_meta.model_calls_made += 1 if kvs else 0
+            log_lines.append(
+                f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
+            )
+        elif self.enable_llm and not self.llm_extractor.enabled:
+            kvs = []
+            log_lines.append("LLM selected but Azure env not configured – skipping")
+        else:
+            kvs = []
+            log_lines.append("LLM disabled by user toggle")
 
         # --- Azure Document Intelligence Fallback (PDF only) ---
         di_triggered = False
         if file_type == 'pdf' and len(kvs) == 0:
-            if self.di_extractor.enabled:
+            if self.enable_di and self.di_extractor.enabled:
                 di_kvs, di_meta = self.di_extractor.extract(file_path)
                 if di_kvs:
                     document.key_values.extend(di_kvs)
@@ -110,8 +131,10 @@ class DocumentPipeline:
                     log_lines.append(f"DI fallback fields: {len(di_kvs)} model={di_meta.get('model_used')}")
                 else:
                     log_lines.append(f"DI fallback produced 0 fields error={di_meta.get('error')}")
+            elif self.enable_di and not self.di_extractor.enabled:
+                log_lines.append("DI selected but Azure env not configured – skipping")
             else:
-                log_lines.append("DI fallback disabled (env vars missing)")
+                log_lines.append("DI disabled by user toggle")
 
         # Optional legacy rules (disabled by default)
         if self.use_rules:

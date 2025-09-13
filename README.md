@@ -136,6 +136,21 @@ All documents are normalized to a consistent JSON structure:
 
 ## 🔧 Development
 
+### Synthetic Dataset (Indian GST Invoices)
+
+A synthetic invoice generator lives in `scripts/generate_indian_invoices.py` producing HTML/JSON (and optional PDF) GST-style invoices for benchmarking extraction. See `datasets/indian_gst/README.md` for details.
+
+```bash
+# Generate 10 synthetic invoices
+python scripts/generate_indian_invoices.py --count 10
+
+# Generate with PDF output (requires WeasyPrint)
+python scripts/generate_indian_invoices.py --count 25 --pdf
+
+# Evaluate parsing accuracy
+python scripts/evaluate_invoices.py
+```
+
 ### Adding New Extractors
 
 1. Create extractor in `src/normalization/extractors/`

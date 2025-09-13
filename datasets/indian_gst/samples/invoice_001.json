@@ -1,0 +1,34 @@
+{
+  "invoice_number": "INV-2025-7448",
+  "invoice_date": "2025-09-02",
+  "supplier_name": "Chaudhary-Ramesh",
+  "supplier_gstin": "28BEZLF2696LFZ8",
+  "supplier_address": "28, De Marg, New Delhi 735372",
+  "recipient_name": "Sura and Sons",
+  "recipient_gstin": "28UERTD9762YZZ9",
+  "recipient_address": "30/873, Goda Circle, Nizamabad-410504",
+  "place_of_supply": "Andhra Pradesh",
+  "reverse_charge": "Yes",
+  "phone_number": "08813465335",
+  "email": "sdar@shanker-peri.info",
+  "line_items": [
+    {
+      "description": "Stationery Items",
+      "hsn_sac": "9983",
+      "quantity": 5,
+      "unit_price": 555.02,
+      "taxable_value": 2775.1,
+      "cgst_rate": 6.0,
+      "cgst_amount": 166.51,
+      "sgst_rate": 6.0,
+      "sgst_amount": 166.51,
+      "igst_rate": null,
+      "igst_amount": null,
+      "line_total": 3108.11
+    }
+  ],
+  "taxable_total": 2775.1,
+  "total_tax": 333.02,
+  "total_amount": 3108.12,
+  "total_amount_in_words": "Rupees Saepe Thousand Only"
+}

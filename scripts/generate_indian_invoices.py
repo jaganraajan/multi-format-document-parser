@@ -1,9 +1,39 @@
 #!/usr/bin/env python3
 """
-Synthetic Indian GST Invoice Generator
+Synthetic Indian GST Invoice Generator with Sender Profile Variations
 
-Generates realistic but completely synthetic Indian GST tax invoices
-for testing and benchmarking document parsing systems.
+Generates realistic but completely synthetic Indian GST tax invoices with
+per-sender layout variations and controlled anomalies. This enables hybrid
+pipeline testing where:
+
+1. 95% of documents use rule-friendly layouts with consistent per-sender 
+   formatting (font, label vocabulary, field ordering) → should converge 
+   to stable signatures & high rule coverage.
+
+2. 5% exhibit anomalous layouts (renamed labels, relocated totals, missing 
+   labels, noisy prefixes) → should reduce rule confidence and trigger 
+   selective LLM fallback.
+
+The variation system uses SenderProfile objects with quirk levels:
+- Level 0-1: Normal, rule-friendly layouts  
+- Level 2-3: Anomalous layouts requiring AI assistance
+
+Key Features:
+- 8 predefined sender profiles with distinct styling
+- Configurable anomaly injection (--variation-ratio)
+- Deterministic generation with seeds
+- Enhanced JSON metadata for signature learning
+- Backward compatible with existing pipeline
+
+Usage Examples:
+  # Default 5% anomaly rate
+  python generate_indian_invoices.py --count 50
+  
+  # No anomalies (pure rule testing)  
+  python generate_indian_invoices.py --count 100 --variation-ratio 0
+  
+  # High anomaly rate (LLM fallback testing)
+  python generate_indian_invoices.py --count 20 --variation-ratio 0.3
 
 Author: Multi-Format Document Parser
 License: MIT

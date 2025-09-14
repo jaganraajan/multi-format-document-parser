@@ -69,6 +69,53 @@ def initialize_pipeline():
     return st.session_state.pipeline
 
 
+def render_usage_panel(pipeline: DocumentPipeline):
+    """Render the usage and cost panel in the sidebar."""
+    try:
+        usage = pipeline.get_usage_summary()
+        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("💰 Usage & Cost")
+        
+        # Overall metrics
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            st.metric("Documents", usage['documents_processed'])
+            st.metric("LLM Calls", usage['llm_calls'])
+            st.metric("DI Calls", usage['di_calls'])
+        
+        with col2:
+            st.metric("Rule Fields", usage['rule_field_hits'])
+            st.metric("Input Tokens", f"{usage['input_tokens']:,}")
+            st.metric("Output Tokens", f"{usage['output_tokens']:,}")
+        
+        # Processing stats
+        if usage['documents_processed'] > 0:
+            st.sidebar.metric("Avg Time/Doc", f"{usage['avg_processing_seconds']:.2f}s")
+            st.sidebar.metric("AI Usage Rate", f"{usage['ai_doc_ratio']:.0%}")
+        
+        # Cost breakdown
+        cost = usage['cost']
+        if cost['total_cost'] > 0:
+            st.sidebar.markdown("**💵 Cost Estimates**")
+            st.sidebar.text(f"LLM: ${cost['llm_cost']:.4f}")
+            st.sidebar.text(f"DI: ${cost['di_cost']:.4f}")
+            st.sidebar.text(f"**Total: ${cost['total_cost']:.4f}**")
+        else:
+            st.sidebar.markdown("**💵 Cost: $0.00** _(No AI calls)_")
+        
+        # Disclaimer
+        st.sidebar.caption("💡 Costs are estimates based on configured unit prices; not authoritative billing data.")
+        
+        # Reset button
+        if st.sidebar.button("🔄 Reset Usage Stats", help="Clear all usage statistics"):
+            pipeline.usage_tracker.reset()
+            st.rerun()
+        
+    except Exception as e:
+        st.sidebar.error(f"Error loading usage data: {e}")
+
+
 def main():
     """Main Streamlit application."""
     st.title("📄 Multi-Format Document Parser")
@@ -86,6 +133,9 @@ def main():
     if pipeline is None:
         st.error("Failed to initialize pipeline. Please check your setup.")
         return
+    
+    # Render usage panel in sidebar
+    render_usage_panel(pipeline)
     
     if page == "Document Upload":
         document_upload_page(pipeline)

@@ -94,6 +94,14 @@ class AzureOpenAILLMExtractor:
             metadata["model_used"] = os.getenv("AZURE_OPENAI_DEPLOYMENT")
             content = response.choices[0].message.content if response.choices else "{}"
             metadata["raw_response"] = content
+            
+            # Capture token usage for cost tracking
+            if hasattr(response, 'usage') and response.usage:
+                metadata["usage"] = {
+                    "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
+                    "total_tokens": getattr(response.usage, 'total_tokens', 0)
+                }
             data = self._safe_parse_json(content)
             kvs: List[KeyValue] = []
             for field in self.fields:

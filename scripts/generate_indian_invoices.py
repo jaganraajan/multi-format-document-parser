@@ -1,9 +1,39 @@
 #!/usr/bin/env python3
 """
-Synthetic Indian GST Invoice Generator
+Synthetic Indian GST Invoice Generator with Sender Profile Variations
 
-Generates realistic but completely synthetic Indian GST tax invoices
-for testing and benchmarking document parsing systems.
+Generates realistic but completely synthetic Indian GST tax invoices with
+per-sender layout variations and controlled anomalies. This enables hybrid
+pipeline testing where:
+
+1. 95% of documents use rule-friendly layouts with consistent per-sender 
+   formatting (font, label vocabulary, field ordering) → should converge 
+   to stable signatures & high rule coverage.
+
+2. 5% exhibit anomalous layouts (renamed labels, relocated totals, missing 
+   labels, noisy prefixes) → should reduce rule confidence and trigger 
+   selective LLM fallback.
+
+The variation system uses SenderProfile objects with quirk levels:
+- Level 0-1: Normal, rule-friendly layouts  
+- Level 2-3: Anomalous layouts requiring AI assistance
+
+Key Features:
+- 8 predefined sender profiles with distinct styling
+- Configurable anomaly injection (--variation-ratio)
+- Deterministic generation with seeds
+- Enhanced JSON metadata for signature learning
+- Backward compatible with existing pipeline
+
+Usage Examples:
+  # Default 5% anomaly rate
+  python generate_indian_invoices.py --count 50
+  
+  # No anomalies (pure rule testing)  
+  python generate_indian_invoices.py --count 100 --variation-ratio 0
+  
+  # High anomaly rate (LLM fallback testing)
+  python generate_indian_invoices.py --count 20 --variation-ratio 0.3
 
 Author: Multi-Format Document Parser
 License: MIT
@@ -14,6 +44,7 @@ import json
 import random
 import string
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -50,6 +81,232 @@ def load_weasyprint() -> Tuple[Optional[Any], Optional[str]]:
             "Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libcairo2 libgdk-pixbuf2.0-0 libffi-dev\n"
             "Then: pip install --upgrade weasyprint"
         )
+
+
+@dataclass
+class SenderProfile:
+    """Profile defining sender-specific layout and styling quirks for invoice generation.
+    
+    This enables the hybrid pipeline to learn layout signatures for consistent senders
+    while introducing controlled anomalies to test LLM fallback logic.
+    """
+    sender_id: str
+    font_family: str
+    color_primary: str
+    invoice_label_variants: List[str]
+    field_label_overrides: Dict[str, str]
+    layout_style: str
+    quirk_level: int  # 0-3, higher means more aggressive formatting drift
+
+
+def _build_sender_profiles() -> List[SenderProfile]:
+    """Build catalog of sender profiles with varying layout characteristics."""
+    return [
+        SenderProfile(
+            sender_id="ACME_CORP",
+            font_family="Arial, sans-serif",
+            color_primary="#2c3e50",
+            invoice_label_variants=["Tax Invoice", "Invoice", "Invoice #"],
+            field_label_overrides={},
+            layout_style="standard",
+            quirk_level=0
+        ),
+        SenderProfile(
+            sender_id="TECH_SOLUTIONS",
+            font_family="Helvetica, sans-serif", 
+            color_primary="#3498db",
+            invoice_label_variants=["Commercial Invoice", "Invoice", "Tax Invoice"],
+            field_label_overrides={"invoice_number": "Invoice Ref"},
+            layout_style="compact",
+            quirk_level=1
+        ),
+        SenderProfile(
+            sender_id="GLOBAL_SERVICES",
+            font_family="Times, serif",
+            color_primary="#e74c3c",
+            invoice_label_variants=["Invoice No.", "Invoice", "Commercial Invoice"],
+            field_label_overrides={"invoice_date": "Date"},
+            layout_style="totals-top",
+            quirk_level=0
+        ),
+        SenderProfile(
+            sender_id="INNOVATIVE_TECH",
+            font_family="Verdana, sans-serif",
+            color_primary="#9b59b6",
+            invoice_label_variants=["Tax Invoice", "Invoice #", "Invoice"],
+            field_label_overrides={"total_amount": "Final Amount"},
+            layout_style="lines-condensed",
+            quirk_level=1
+        ),
+        SenderProfile(
+            sender_id="PREMIUM_CONSULTANTS",
+            font_family="Georgia, serif",
+            color_primary="#f39c12", 
+            invoice_label_variants=["Professional Invoice", "Invoice", "Service Invoice"],
+            field_label_overrides={"place_of_supply": "Delivery Location"},
+            layout_style="standard",
+            quirk_level=2
+        ),
+        SenderProfile(
+            sender_id="DYNAMIC_ENTERPRISES",
+            font_family="Calibri, sans-serif",
+            color_primary="#27ae60",
+            invoice_label_variants=["Invoice", "Commercial Invoice", "Tax Invoice"],
+            field_label_overrides={"reverse_charge": "Reverse Charge Applicable"},
+            layout_style="compact",
+            quirk_level=1
+        ),
+        SenderProfile(
+            sender_id="QUIRKY_CORP",
+            font_family="Comic Sans MS, cursive",
+            color_primary="#e67e22",
+            invoice_label_variants=["*** Invoice ***", "Invoice!", "Our Invoice #"],
+            field_label_overrides={"invoice_number": "Ref #", "invoice_date": "Bill Date"},
+            layout_style="totals-top",
+            quirk_level=3
+        ),
+        SenderProfile(
+            sender_id="LEGACY_SYSTEMS",
+            font_family="Courier, monospace",
+            color_primary="#34495e",
+            invoice_label_variants=["INVOICE DOCUMENT", "Invoice #", "TAX INVOICE"],
+            field_label_overrides={"supplier_name": "Vendor", "recipient_name": "Customer"},
+            layout_style="lines-condensed", 
+            quirk_level=2
+        )
+    ]
+
+
+def _pick_sender_profile(variation_ratio: float, sender_count: int, sender_profiles: List[SenderProfile]) -> Tuple[SenderProfile, bool]:
+    """Pick a sender profile based on variation ratio.
+    
+    Returns (profile, requires_ai_hint) where requires_ai_hint indicates
+    if this should trigger LLM fallback due to anomalies.
+    """
+    # Limit to sender_count profiles
+    available_profiles = sender_profiles[:sender_count]
+    
+    # Decide if this should be an anomalous case
+    is_anomalous = random.random() < variation_ratio
+    
+    if is_anomalous:
+        # Pick profiles with higher quirk levels or mutate normal profiles
+        high_quirk_profiles = [p for p in available_profiles if p.quirk_level >= 2]
+        if high_quirk_profiles:
+            profile = random.choice(high_quirk_profiles)
+        else:
+            # Mutate a normal profile on the fly for anomalous behavior
+            base_profile = random.choice(available_profiles)
+            profile = SenderProfile(
+                sender_id=base_profile.sender_id,
+                font_family=base_profile.font_family,
+                color_primary=base_profile.color_primary,
+                invoice_label_variants=base_profile.invoice_label_variants,
+                field_label_overrides=base_profile.field_label_overrides.copy(),
+                layout_style=base_profile.layout_style,
+                quirk_level=3  # Force high quirk for anomalous behavior
+            )
+        return profile, True
+    else:
+        # Pick normal profiles (quirk_level 0-1)
+        normal_profiles = [p for p in available_profiles if p.quirk_level <= 1]
+        if normal_profiles:
+            profile = random.choice(normal_profiles)
+        else:
+            profile = random.choice(available_profiles)
+        return profile, False
+
+
+def _apply_anomalies(invoice_data: Dict, profile: SenderProfile, requires_ai_hint: bool) -> Tuple[Dict, List[str]]:
+    """Apply layout anomalies based on profile quirk level and anomaly flag.
+    
+    Returns (modified_invoice_data, list_of_anomaly_descriptions).
+    """
+    anomalies = []
+    
+    if not requires_ai_hint and profile.quirk_level <= 1:
+        return invoice_data, anomalies
+    
+    # Apply anomalies based on quirk level
+    if profile.quirk_level >= 2 or requires_ai_hint:
+        # Label renaming anomalies
+        if random.random() < 0.5:
+            # Rename invoice number label to something non-standard
+            anomalies.append("invoice_number_label_renamed")
+            
+        if random.random() < 0.3:
+            # Use sentence-embedded format for invoice number
+            anomalies.append("invoice_number_sentence_format")
+            
+        if random.random() < 0.4:
+            # Add noise wrappers around labels
+            anomalies.append("label_noise_wrappers")
+            
+        if random.random() < 0.2:
+            # Omit a field label while keeping value
+            anomalies.append("field_label_omission")
+            
+        if random.random() < 0.3:
+            # Reorder header blocks
+            anomalies.append("header_block_reorder")
+            
+        if profile.layout_style == "totals-top" or random.random() < 0.2:
+            # Move totals above line items
+            anomalies.append("totals_above_items")
+    
+    return invoice_data, anomalies
+
+
+def _construct_template_params(invoice_data: Dict, profile: SenderProfile, anomalies: List[str]) -> Dict:
+    """Construct template parameters including style and anomaly-specific rendering flags."""
+    
+    # Select invoice label variant
+    invoice_label_used = random.choice(profile.invoice_label_variants)
+    
+    # Apply field label overrides
+    field_labels = {
+        "invoice_number": "Invoice Number:",
+        "invoice_date": "Invoice Date:",
+        "total_amount": "Total Amount:",
+        "place_of_supply": "Place of Supply:",
+        "reverse_charge": "Reverse Charge:",
+        "supplier_name": "From:",
+        "recipient_name": "To:"
+    }
+    
+    # Apply profile overrides
+    for field, override_label in profile.field_label_overrides.items():
+        if field in field_labels:
+            field_labels[field] = f"{override_label}:"
+    
+    # Apply anomaly modifications
+    if "invoice_number_label_renamed" in anomalies:
+        field_labels["invoice_number"] = random.choice(["Ref #:", "Our Ref:", "Doc No:"])
+    
+    if "invoice_number_sentence_format" in anomalies:
+        field_labels["invoice_number"] = "Our Reference:"
+    
+    if "label_noise_wrappers" in anomalies:
+        invoice_label_used = f"*** {invoice_label_used} ***"
+        
+    if "field_label_omission" in anomalies:
+        # Randomly omit a label
+        omit_field = random.choice(["invoice_date", "reverse_charge"])
+        field_labels[omit_field] = ""
+    
+    # Construct template parameters
+    template_params = invoice_data.copy()
+    template_params.update({
+        "invoice_label_used": invoice_label_used,
+        "field_labels": field_labels,
+        "font_family": profile.font_family,
+        "color_primary": profile.color_primary,
+        "layout_style": profile.layout_style,
+        "anomalies": anomalies,
+        "sender_id": profile.sender_id
+    })
+    
+    return template_params
 
 
 class IndianGSTInvoiceGenerator:
@@ -205,8 +462,9 @@ class IndianGSTInvoiceGenerator:
             self._round_currency(Decimal(str(total_amount)))
         )
     
-    def generate_invoice_data(self, max_items: int = 4) -> Dict:
-        """Generate complete synthetic invoice data."""
+    def generate_invoice_data(self, max_items: int = 4, sender_profile: Optional[SenderProfile] = None, 
+                             anomalies: Optional[List[str]] = None, requires_ai_hint: bool = False) -> Dict:
+        """Generate complete synthetic invoice data with optional sender profile metadata."""
         # Choose random states for supplier and recipient
         supplier_state_code = random.choice(list(self.INDIAN_STATES.keys()))
         
@@ -263,57 +521,131 @@ class IndianGSTInvoiceGenerator:
         else:
             invoice_data["total_amount_in_words"] = ""
         
+        # Add sender profile metadata if provided
+        if sender_profile:
+            invoice_label_used = random.choice(sender_profile.invoice_label_variants)
+            invoice_data.update({
+                "sender_id": sender_profile.sender_id,
+                "layout_variant": sender_profile.layout_style,
+                "invoice_label_used": invoice_label_used,
+                "anomalies": anomalies or [],
+                "requires_ai_hint": requires_ai_hint
+            })
+        
         return invoice_data
 
 
 def create_html_template() -> str:
-    """Create Jinja2 HTML template for invoice rendering."""
+    """Create Jinja2 HTML template for invoice rendering with dynamic styling and layout options.
+    
+    Template supports:
+    - Dynamic font families and colors via sender profiles
+    - Conditional layout styles (standard, compact, totals-top, lines-condensed)
+    - Variable invoice labels instead of hardcoded "TAX INVOICE"
+    - Anomaly-specific rendering (noise wrappers, field omissions, reordering)
+    """
     return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tax Invoice - {{ invoice_number }}</title>
+    <title>{{ invoice_label_used }} - {{ invoice_number }}</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }
-        .header { text-align: center; margin-bottom: 20px; }
-        .invoice-title { font-size: 18px; font-weight: bold; }
-        .company-details { margin: 15px 0; }
-        .invoice-details { margin: 15px 0; }
-        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-        th { background-color: #f5f5f5; font-weight: bold; }
+        body { 
+            font-family: {{ font_family or 'Arial, sans-serif' }}; 
+            margin: 20px; 
+            font-size: {% if layout_style == 'compact' %}10px{% elif layout_style == 'lines-condensed' %}11px{% else %}12px{% endif %}; 
+        }
+        .header { 
+            text-align: center; 
+            margin-bottom: {% if layout_style == 'compact' %}10px{% else %}20px{% endif %}; 
+            color: {{ color_primary or '#000000' }};
+        }
+        .invoice-title { 
+            font-size: {% if layout_style == 'compact' %}16px{% else %}18px{% endif %}; 
+            font-weight: bold; 
+        }
+        .company-details { 
+            margin: {% if layout_style == 'compact' %}10px 0{% else %}15px 0{% endif %}; 
+        }
+        .invoice-details { 
+            margin: {% if layout_style == 'compact' %}10px 0{% else %}15px 0{% endif %}; 
+        }
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin: {% if layout_style == 'compact' %}5px 0{% else %}10px 0{% endif %}; 
+        }
+        th, td { 
+            border: 1px solid #ccc; 
+            padding: {% if layout_style == 'compact' %}4px{% elif layout_style == 'lines-condensed' %}6px{% else %}8px{% endif %}; 
+            text-align: left; 
+        }
+        th { 
+            background-color: #f5f5f5; 
+            font-weight: bold; 
+        }
         .text-right { text-align: right; }
         .text-center { text-align: center; }
-        .totals { margin-top: 20px; }
+        .totals { 
+            margin-top: {% if layout_style == 'compact' %}10px{% else %}20px{% endif %}; 
+        }
         .grid { display: flex; gap: 20px; }
         .grid-item { flex: 1; }
         .label { font-weight: bold; }
+        .wrapper-spacing { 
+            margin: {% if layout_style == 'compact' %}5px 0{% else %}10px 0{% endif %}; 
+        }
+        {% if 'header_block_reorder' in (anomalies or []) %}
+        .header-reordered .grid { flex-direction: row-reverse; }
+        {% endif %}
     </style>
 </head>
 <body>
     <div class="header">
-        <div class="invoice-title">TAX INVOICE</div>
+        <div class="invoice-title">{{ invoice_label_used or 'TAX INVOICE' }}</div>
     </div>
     
-    <div class="grid">
-        <div class="grid-item">
-            <div class="company-details">
-                <div class="label">From:</div>
-                <div><strong>{{ supplier_name }}</strong></div>
-                <div>GSTIN: {{ supplier_gstin }}</div>
-                <div>{{ supplier_address }}</div>
-                {% if phone_number %}<div>Phone: {{ phone_number }}</div>{% endif %}
-                {% if email %}<div>Email: {{ email }}</div>{% endif %}
+    {% if 'totals_above_items' in (anomalies or []) %}
+    <!-- Anomaly: Totals above line items -->
+    <div class="totals">
+        <table style="width: 40%; margin-left: auto;">
+            <tr>
+                <td class="label">{{ field_labels.get('taxable_total', 'Taxable Total:') }}</td>
+                <td class="text-right">₹ {{ "%.2f"|format(taxable_total) }}</td>
+            </tr>
+            <tr>
+                <td class="label">Total Tax:</td>
+                <td class="text-right">₹ {{ "%.2f"|format(total_tax) }}</td>
+            </tr>
+            <tr style="font-weight: bold; background-color: #f5f5f5;">
+                <td class="label">{{ field_labels.get('total_amount', 'Total Amount:') }}</td>
+                <td class="text-right">₹ {{ "%.2f"|format(total_amount) }}</td>
+            </tr>
+        </table>
+    </div>
+    {% endif %}
+    
+    <div class="{% if 'header_block_reorder' in (anomalies or []) %}header-reordered{% endif %}">
+        <div class="grid">
+            <div class="grid-item">
+                <div class="company-details">
+                    <div class="label">{{ field_labels.get('supplier_name', 'From:') }}</div>
+                    <div><strong>{{ supplier_name }}</strong></div>
+                    <div>GSTIN: {{ supplier_gstin }}</div>
+                    <div>{{ supplier_address }}</div>
+                    {% if phone_number %}<div>Phone: {{ phone_number }}</div>{% endif %}
+                    {% if email %}<div>Email: {{ email }}</div>{% endif %}
+                </div>
             </div>
-        </div>
-        
-        <div class="grid-item">
-            <div class="company-details">
-                <div class="label">To:</div>
-                <div><strong>{{ recipient_name }}</strong></div>
-                <div>GSTIN: {{ recipient_gstin }}</div>
-                <div>{{ recipient_address }}</div>
+            
+            <div class="grid-item">
+                <div class="company-details">
+                    <div class="label">{{ field_labels.get('recipient_name', 'To:') }}</div>
+                    <div><strong>{{ recipient_name }}</strong></div>
+                    <div>GSTIN: {{ recipient_gstin }}</div>
+                    <div>{{ recipient_address }}</div>
+                </div>
             </div>
         </div>
     </div>
@@ -321,15 +653,15 @@ def create_html_template() -> str:
     <div class="invoice-details">
         <table>
             <tr>
-                <td class="label">Invoice Number:</td>
-                <td>{{ invoice_number }}</td>
-                <td class="label">Invoice Date:</td>
+                <td class="label">{% if field_labels.get('invoice_number') %}{{ field_labels.invoice_number }}{% else %}Invoice Number:{% endif %}</td>
+                <td>{% if 'invoice_number_sentence_format' in (anomalies or []) %}Our Reference: {{ invoice_number }}{% else %}{{ invoice_number }}{% endif %}</td>
+                <td class="label">{% if field_labels.get('invoice_date') %}{{ field_labels.invoice_date }}{% else %}Invoice Date:{% endif %}</td>
                 <td>{{ invoice_date }}</td>
             </tr>
             <tr>
-                <td class="label">Place of Supply:</td>
+                <td class="label">{% if field_labels.get('place_of_supply') %}{{ field_labels.place_of_supply }}{% else %}Place of Supply:{% endif %}</td>
                 <td>{{ place_of_supply }}</td>
-                <td class="label">Reverse Charge:</td>
+                <td class="label">{% if field_labels.get('reverse_charge') %}{{ field_labels.reverse_charge }}{% else %}Reverse Charge:{% endif %}</td>
                 <td>{{ reverse_charge }}</td>
             </tr>
         </table>
@@ -380,6 +712,8 @@ def create_html_template() -> str:
         </tbody>
     </table>
     
+    {% if 'totals_above_items' not in (anomalies or []) %}
+    <!-- Normal totals position -->
     <div class="totals">
         <table style="width: 40%; margin-left: auto;">
             <tr>
@@ -391,11 +725,12 @@ def create_html_template() -> str:
                 <td class="text-right">₹ {{ "%.2f"|format(total_tax) }}</td>
             </tr>
             <tr style="font-weight: bold; background-color: #f5f5f5;">
-                <td class="label">Total Amount:</td>
+                <td class="label">{{ field_labels.get('total_amount', 'Total Amount:') }}</td>
                 <td class="text-right">₹ {{ "%.2f"|format(total_amount) }}</td>
             </tr>
         </table>
     </div>
+    {% endif %}
     
     {% if total_amount_in_words %}
     <div style="margin-top: 20px;">
@@ -405,18 +740,30 @@ def create_html_template() -> str:
     
     <div style="margin-top: 30px; text-align: center; font-size: 10px; color: #666;">
         This is a computer generated synthetic invoice for testing purposes only.
+        {% if sender_id %}Sender: {{ sender_id }}{% endif %}
+        {% if anomalies %} | Anomalies: {{ anomalies|join(', ') }}{% endif %}
     </div>
 </body>
 </html>"""
 
 
 def generate_invoices(count: int, output_dir: Path, max_items: int,
-                     generate_pdf: bool, seed: Optional[int] = None) -> None:
-    """Generate specified number of synthetic invoices.
+                     generate_pdf: bool, seed: Optional[int] = None, 
+                     variation_ratio: float = 0.05, sender_count: Optional[int] = None) -> None:
+    """Generate specified number of synthetic invoices with sender profile variations.
 
     Lazily loads WeasyPrint only if PDF output requested. Provides a single
     actionable message if PDF generation cannot proceed, then continues with
     HTML/JSON generation.
+    
+    Args:
+        count: Number of invoices to generate
+        output_dir: Directory to save generated files
+        max_items: Maximum line items per invoice
+        generate_pdf: Whether to generate PDF files
+        seed: Random seed for reproducible generation
+        variation_ratio: Probability of anomalous layouts (0.0-1.0)
+        sender_count: Number of sender profiles to use (defaults to all available)
     """
 
     weasyprint_module: Optional[Any] = None
@@ -430,8 +777,14 @@ def generate_invoices(count: int, output_dir: Path, max_items: int,
     print(f"🏭 Generating {count} synthetic Indian GST invoices...")
     print(f"📁 Output directory: {output_dir}")
     print(f"📄 Max line items: {max_items}")
+    print(f"🎭 Variation ratio: {variation_ratio:.1%} (anomalous layouts)")
     pdf_status = "Enabled" if (generate_pdf and weasyprint_module) else "Disabled"
-    print(f"� PDF generation: {pdf_status}")
+    print(f"📜 PDF generation: {pdf_status}")
+    
+    # Build sender profiles
+    sender_profiles = _build_sender_profiles()
+    effective_sender_count = sender_count or len(sender_profiles)
+    print(f"👥 Using {effective_sender_count} sender profiles from {len(sender_profiles)} available")
     
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -443,11 +796,29 @@ def generate_invoices(count: int, output_dir: Path, max_items: int,
     html_template = Template(create_html_template())
     
     success_count = 0
+    anomaly_count = 0
     
     for i in range(1, count + 1):
         try:
-            # Generate invoice data
-            invoice_data = generator.generate_invoice_data(max_items)
+            # Pick sender profile and determine if anomalous
+            sender_profile, requires_ai_hint = _pick_sender_profile(
+                variation_ratio, effective_sender_count, sender_profiles
+            )
+            
+            # Generate base invoice data
+            invoice_data = generator.generate_invoice_data(
+                max_items, sender_profile=sender_profile, requires_ai_hint=requires_ai_hint
+            )
+            
+            # Apply anomalies based on profile and flags
+            invoice_data, anomalies = _apply_anomalies(invoice_data, sender_profile, requires_ai_hint)
+            
+            # Update invoice data with final anomaly information
+            invoice_data["anomalies"] = anomalies
+            invoice_data["requires_ai_hint"] = requires_ai_hint or len(anomalies) > 0
+            
+            # Construct template parameters with styling and layout flags
+            template_params = _construct_template_params(invoice_data, sender_profile, anomalies)
             
             # File basenames
             base_name = f"invoice_{i:03d}"
@@ -455,11 +826,11 @@ def generate_invoices(count: int, output_dir: Path, max_items: int,
             json_file = output_dir / f"{base_name}.json"
             pdf_file = output_dir / f"{base_name}.pdf"
             
-            # Generate HTML
-            html_content = html_template.render(**invoice_data)
+            # Generate HTML using enhanced template
+            html_content = html_template.render(**template_params)
             html_file.write_text(html_content, encoding='utf-8')
             
-            # Generate JSON ground truth
+            # Generate JSON ground truth with enhanced metadata
             json_file.write_text(json.dumps(invoice_data, indent=2, ensure_ascii=False), 
                                 encoding='utf-8')
             
@@ -472,14 +843,17 @@ def generate_invoices(count: int, output_dir: Path, max_items: int,
                     print(f"⚠️  PDF generation failed for {base_name}: {e}")
             
             success_count += 1
+            if requires_ai_hint or anomalies:
+                anomaly_count += 1
             
             if i % 10 == 0 or i == count:
-                print(f"✅ Generated: {i}/{count}")
+                print(f"✅ Generated: {i}/{count} ({anomaly_count} with anomalies)")
                 
         except Exception as e:
             print(f"❌ Failed to generate invoice {i}: {e}")
     
     print(f"\n🎉 Successfully generated {success_count}/{count} invoices")
+    print(f"🎭 {anomaly_count} invoices with anomalies ({anomaly_count/success_count:.1%} actual rate)")
     print(f"📁 Files saved to: {output_dir}")
     
     # Summary of files generated
@@ -491,18 +865,26 @@ def generate_invoices(count: int, output_dir: Path, max_items: int,
     print(f"   HTML files: {html_files}")
     print(f"   JSON files: {json_files}")
     print(f"   PDF files: {pdf_files}")
+    
+    # Show sender distribution
+    if success_count > 0:
+        print(f"👥 Sender distribution:")
+        for profile in sender_profiles[:effective_sender_count]:
+            print(f"   {profile.sender_id} (quirk level {profile.quirk_level})")
 
 
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Generate synthetic Indian GST invoices for testing",
+        description="Generate synthetic Indian GST invoices for testing with sender profile variations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s --count 10
   %(prog)s --count 25 --pdf --max-items 6
   %(prog)s --count 5 --output-dir /custom/path --seed 12345
+  %(prog)s --count 50 --variation-ratio 0.1 --sender-count 4
+  %(prog)s --count 100 --variation-ratio 0 --seed 42  # No anomalies
         """
     )
     
@@ -519,6 +901,10 @@ Examples:
                        help='Noise level for future OCR simulation (0=clean, 1=noisy)')
     parser.add_argument('--seed', type=int,
                        help='Random seed for reproducible generation')
+    parser.add_argument('--variation-ratio', type=float, default=0.05,
+                       help='Probability of anomalous layouts triggering LLM fallback (default: 0.05 = 5%%)')
+    parser.add_argument('--sender-count', type=int,
+                       help='Number of sender profiles to use (default: all available)')
     
     args = parser.parse_args()
     
@@ -531,6 +917,14 @@ Examples:
         print("❌ Max items must be positive")
         sys.exit(1)
     
+    if not (0.0 <= args.variation_ratio <= 1.0):
+        print("❌ Variation ratio must be between 0.0 and 1.0")
+        sys.exit(1)
+    
+    if args.sender_count is not None and args.sender_count <= 0:
+        print("❌ Sender count must be positive")
+        sys.exit(1)
+    
     # Handle noise level (placeholder for future)
     if args.noise_level > 0:
         print("⚠️  Noise level > 0 is not yet implemented (placeholder for future OCR simulation)")
@@ -541,7 +935,9 @@ Examples:
             output_dir=args.output_dir,
             max_items=args.max_items,
             generate_pdf=args.pdf,
-            seed=args.seed
+            seed=args.seed,
+            variation_ratio=args.variation_ratio,
+            sender_count=args.sender_count
         )
     except KeyboardInterrupt:
         print("\n⏹️  Generation interrupted by user")

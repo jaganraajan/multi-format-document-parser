@@ -10,6 +10,7 @@ A starter Streamlit application for multi-format document processing using hybri
 - **📊 Normalized Output**: Consistent JSON schema across all document types
 - **🌐 Streamlit Interface**: Web-based document upload and management
 - **📈 Pipeline Analytics**: Processing statistics and performance monitoring
+- **🧠 Selective AI Gating**: Optional Azure OpenAI + Document Intelligence used only when needed (cost-aware)
 
 ## 🚀 Quick Start
 
@@ -80,8 +81,10 @@ src/normalization/
 2. **Extract**: Format-specific content and layout extraction
 3. **Signature**: Generate/match layout signature for document type
 4. **Rules**: Apply global and signature-specific extraction rules
-5. **Normalize**: Convert to standardized JSON schema
-6. **Store**: Save to document repository with indexing
+5. **Gating**: Evaluate coverage/confidence → decide on AI usage
+6. **AI (Conditional)**: LLM + optional DI fallback only if needed
+7. **Normalize**: Convert to standardized JSON schema
+8. **Store**: Save to document repository with indexing
 
 ## ⚙️ Configuration
 
@@ -106,6 +109,7 @@ rules:
 - `rules/` - Extraction rule configurations
   - `global_rules.yml` - Global extraction patterns
   - `signature_overrides/` - Signature-specific rule overrides
+- `docs/adr/` - Architectural Decision Records (see ADR 0001)
 
 ## 📊 Document Schema
 
@@ -129,7 +133,7 @@ All documents are normalized to a consistent JSON structure:
     "signature_id": "def456",
     "signature_match_score": 0.95,
     "rules_applied": ["global"],
-    "coverage_stats": {...}
+    "coverage_stats": {"rule_coverage": 0.42}
   }
 }
 ```
@@ -209,6 +213,13 @@ For questions or issues:
 - Open a GitHub issue
 - Check existing documentation
 - Review the example configurations
+
+## 🧭 Architectural Decision Records (ADRs)
+ADRs capture *why* architectural choices were made, supporting governance and future evolution. See:
+- `docs/adr/0001-hybrid-vs-monolithic-llm.md` – Rationale for hybrid gating vs monolithic LLM approach
+
+## 🤖 Selective AI Extraction (Azure OpenAI + DI Fallback)
+The pipeline supports user-toggled AI usage. If both AI toggles are off, documents are processed in pure local mode (signatures + rules). AI is **not** a hard dependency for baseline normalization.
 
 ## 🤖 LLM Extraction (Azure OpenAI)
 

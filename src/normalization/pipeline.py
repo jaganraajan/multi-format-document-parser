@@ -17,6 +17,7 @@ from .extractors.pdf_extractor import PDFExtractor
 from .extractors.text_extractor import TextExtractor
 from .extractors.email_extractor import EmailExtractor
 from .storage import DocumentRepository
+from .usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class DocumentPipeline:
         self.llm_extractor = AzureOpenAILLMExtractor()
         self.di_extractor = AzureDocumentIntelligenceExtractor()
         self.repository = DocumentRepository(self.outputs_dir)
+        self.usage_tracker = UsageTracker()
 
         # File extractors
         self.pdf_extractor = PDFExtractor()
@@ -121,7 +123,7 @@ class DocumentPipeline:
         document = NormalizedDocument.create(filename, file_size, file_type, content_bytes)
 
         # --- Content extraction ---
-        text, layout_elements = self._extract_content(file_path, file_type)
+        text, layout_elements, extraction_metadata = self._extract_content(file_path, file_type)
         log_lines.append(f"Extracted {len(text)} chars from {len(layout_elements)} layout elements")
 
         # --- Signature processing ---
@@ -160,6 +162,10 @@ class DocumentPipeline:
             processing_time = time.time() - start_time
             document.ingest_metadata.processing_time_seconds = processing_time
             document.processing_meta.coverage_stats = calculate_coverage_stats(document)
+            
+            # Track document processing completion (signature cache path)
+            self.usage_tracker.record_document_time(processing_time)
+            
             save_path = self.repository.save_document(document)
             log_lines.append(f"Saved to {save_path}")
             log_lines.append(f"Completed in {processing_time:.2f}s (signature cache)")
@@ -183,6 +189,11 @@ class DocumentPipeline:
             kvs, llm_meta = self.llm_extractor.extract(text)
             document.key_values.extend(kvs)
             document.processing_meta.model_calls_made += 1 if kvs else 0
+            
+            # Track LLM usage
+            if kvs or llm_meta.get('error') != 'llm_disabled':
+                self.usage_tracker.record_llm_call(llm_meta)
+            
             log_lines.append(
                 f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
             )
@@ -232,6 +243,10 @@ class DocumentPipeline:
                     document.key_values.extend(di_kvs)
                     di_triggered = True
                     log_lines.append(f"DI fallback fields: {len(di_kvs)} model={di_meta.get('model_used')}")
+                    
+                    # Track DI usage with page count
+                    page_count = extraction_metadata.get('page_count', 1)
+                    self.usage_tracker.record_di_call(page_count)
                 else:
                     log_lines.append(f"DI fallback produced 0 fields error={di_meta.get('error')}")
             elif self.enable_di and not self.di_extractor.enabled:
@@ -244,6 +259,10 @@ class DocumentPipeline:
             rule_kvs, applied = self._apply_rules(text, signature.signature_id)
             document.key_values.extend(rule_kvs)
             document.processing_meta.rules_applied = applied
+            
+            # Track rule usage
+            self.usage_tracker.record_rules_hit(len(rule_kvs))
+            
             auto_note = " (auto-enabled)" if self.auto_rules_enabled else ""
             log_lines.append(f"Rules added {len(rule_kvs)} fields: {applied}{auto_note}")
         else:
@@ -267,6 +286,9 @@ class DocumentPipeline:
         processing_time = time.time() - start_time
         document.ingest_metadata.processing_time_seconds = processing_time
         document.processing_meta.coverage_stats = calculate_coverage_stats(document)
+        
+        # Track document processing completion
+        self.usage_tracker.record_document_time(processing_time)
 
         save_path = self.repository.save_document(document)
         log_lines.append(f"Saved to {save_path}")
@@ -289,19 +311,19 @@ class DocumentPipeline:
         
         return type_mapping.get(extension, 'unknown')
     
-    def _extract_content(self, file_path: str, file_type: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def _extract_content(self, file_path: str, file_type: str) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         """Extract text and layout elements based on file type."""
         if file_type == 'pdf':
             text, layout_elements, metadata = self.pdf_extractor.extract_content(file_path)
-            return text, layout_elements
+            return text, layout_elements, metadata
         
         elif file_type == 'email':
             text, layout_elements, metadata = self.email_extractor.extract_content(file_path)
-            return text, layout_elements
+            return text, layout_elements, metadata
         
         elif file_type in ['text', 'html']:
             text, layout_elements, metadata = self.text_extractor.extract_content(file_path)
-            return text, layout_elements
+            return text, layout_elements, metadata
         
         else:
             raise ValueError(f"Unsupported file type: {file_type}")
@@ -388,3 +410,11 @@ class DocumentPipeline:
             "rules": self.rules_engine.get_stats(),
             "repository": self.repository.get_statistics()
         }
+    
+    def get_usage_summary(self) -> Dict[str, Any]:
+        """Get current usage statistics and cost estimates.
+        
+        Returns:
+            Dictionary with usage stats, averages, and cost breakdown
+        """
+        return self.usage_tracker.snapshot()

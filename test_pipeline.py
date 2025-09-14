@@ -66,22 +66,31 @@ def test_pipeline_with_toggles(enable_llm=True, enable_di=True):
         print(f"Fields Extracted: {len(document.key_values)}")
         print(f"Model Calls Made: {document.processing_meta.model_calls_made}")
         
+        # NEW: Display gating information
+        print("\n4. Gating & Confidence Metrics:")
+        print("-" * 30)
+        print(f"Gating Decision: {document.processing_meta.gating_decision}")
+        print(f"Document Confidence: {document.processing_meta.document_confidence:.2f}")
+        print(f"Coverage Ratio: {document.processing_meta.coverage_ratio:.2f}")
+        print(f"Required Fields: {document.processing_meta.required_fields_present}/{document.processing_meta.required_fields_total}")
+        print(f"AI Used: LLM={document.processing_meta.ai_used}, DI={document.processing_meta.di_used}")
+        
         # Highlight AI-related log lines
-        print("\n4. AI Processing Log:")
+        print("\n5. AI Processing Log:")
         print("-" * 30)
         log_lines = processing_log.split('\n')
-        ai_related_lines = [line for line in log_lines if any(keyword in line for keyword in ['LLM', 'DI ', 'disabled', 'selected', 'env'])]
+        ai_related_lines = [line for line in log_lines if any(keyword in line for keyword in ['LLM', 'DI ', 'disabled', 'selected', 'env', 'Gating', 'Coverage', 'confidence'])]
         for line in ai_related_lines:
             print(f"  {line}")
         
         # Display extracted fields if any
         if document.key_values:
-            print("\n5. Extracted Key-Value Pairs:")
+            print("\n6. Extracted Key-Value Pairs:")
             print("-" * 30)
             for kv in document.key_values:
                 print(f"  {kv.key}: {kv.value} (confidence: {kv.confidence:.2f}, method: {kv.extraction_method})")
         else:
-            print("\n5. No fields extracted.")
+            print("\n6. No fields extracted.")
             if enable_llm or enable_di:
                 print("   Note: Azure environment variables may not be configured.")
         

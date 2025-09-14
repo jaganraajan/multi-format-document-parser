@@ -189,7 +189,15 @@ def process_documents(pipeline: DocumentPipeline, uploaded_files):
                     'processing_time': document.ingest_metadata.processing_time_seconds,
                     'coverage_stats': document.processing_meta.coverage_stats,
                     'processing_log': processing_log,
-                    'document': document
+                    'document': document,
+                    # New gating fields
+                    'gating_decision': document.processing_meta.gating_decision,
+                    'document_confidence': document.processing_meta.document_confidence,
+                    'coverage_ratio': document.processing_meta.coverage_ratio,
+                    'required_fields_present': document.processing_meta.required_fields_present,
+                    'required_fields_total': document.processing_meta.required_fields_total,
+                    'ai_used': document.processing_meta.ai_used,
+                    'di_used': document.processing_meta.di_used
                 }
                 
                 st.success(f"✅ Processed {uploaded_file.name}")
@@ -226,28 +234,38 @@ def display_processing_results():
     for result in st.session_state.processed_docs:
         if result['status'] == 'success':
             coverage = result.get('coverage_stats', {})
+            # Determine AI usage icons
+            ai_icons = []
+            if result.get('ai_used', False):
+                ai_icons.append("🤖")
+            if result.get('di_used', False):
+                ai_icons.append("📄")
+            ai_usage = "".join(ai_icons) if ai_icons else "🔧"
+            
             data.append({
                 'File': result['filename'],
                 'Doc ID': result['doc_id'],
-                'Signature': result['signature_id'][:8] + '...' if result['signature_id'] else 'N/A',
-                'Match Score': f"{result['signature_match']:.2f}",
+                'Gating Decision': result.get('gating_decision', 'N/A'),
+                'Doc Confidence': f"{result.get('document_confidence', 0):.2f}",
+                'Coverage': f"{result.get('required_fields_present', 0)}/{result.get('required_fields_total', 0)}",
+                'Coverage %': f"{result.get('coverage_ratio', 0):.1%}",
                 'Fields': result['fields_extracted'],
-                'LLM Calls': result.get('model_calls_made', 0),
-                'Rule Coverage': f"{coverage.get('rule_coverage', 0):.1%}",
+                'AI Used': ai_usage,
                 'Time (s)': f"{result['processing_time']:.1f}",
-                'Status': '✅ Success'
+                'Status': '✅'
             })
         else:
             data.append({
                 'File': result['filename'],
                 'Doc ID': 'N/A',
-                'Signature': 'N/A',
-                'Match Score': 'N/A',
+                'Gating Decision': 'N/A',
+                'Doc Confidence': 'N/A',
+                'Coverage': 'N/A',
+                'Coverage %': 'N/A',
                 'Fields': 'N/A',
-                'LLM Calls': 'N/A',
-                'Rule Coverage': 'N/A',
+                'AI Used': 'N/A',
                 'Time (s)': 'N/A',
-                'Status': f"❌ {result.get('error', 'Error')}"
+                'Status': f"❌ Error"
             })
     
     if data:
@@ -276,22 +294,61 @@ def display_document_details(result: Dict[str, Any]):
     document = result['document']
     
     # Tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["📄 JSON Preview", "📊 Key-Values", "📋 Sections", "📝 Processing Log"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Gating Info", "📊 Key-Values", "📄 JSON Preview", "📋 Sections", "📝 Processing Log"])
     
     with tab1:
-        st.subheader("Normalized JSON")
+        st.subheader("🎯 Gating & Confidence Analysis")
         
-        # Download button
-        json_str = json.dumps(document.to_dict(), indent=2, default=str)
-        st.download_button(
-            label="📥 Download JSON",
-            data=json_str,
-            file_name=f"{document.doc_id}_normalized.json",
-            mime="application/json"
-        )
+        col1, col2 = st.columns(2)
         
-        # Display JSON
-        st.json(document.to_dict())
+        with col1:
+            st.write("**🚦 Gating Decision:**")
+            gating_decision = result.get('gating_decision', 'N/A')
+            if 'skip_llm' in gating_decision:
+                st.success(f"✅ {gating_decision}")
+            elif 'call_llm' in gating_decision:
+                st.warning(f"🤖 {gating_decision}")
+            else:
+                st.info(f"ℹ️ {gating_decision}")
+            
+            st.write("**📊 Confidence Metrics:**")
+            st.metric("Document Confidence", f"{result.get('document_confidence', 0):.2f}")
+            st.metric("Coverage Ratio", f"{result.get('coverage_ratio', 0):.1%}")
+            
+        with col2:
+            st.write("**📋 Field Analysis:**")
+            st.metric("Required Fields Present", f"{result.get('required_fields_present', 0)}")
+            st.metric("Required Fields Total", f"{result.get('required_fields_total', 0)}")
+            st.metric("Total Fields Extracted", f"{result.get('fields_extracted', 0)}")
+            
+            st.write("**🤖 AI Usage:**")
+            ai_used = result.get('ai_used', False)
+            di_used = result.get('di_used', False)
+            
+            if ai_used:
+                st.success("🤖 LLM Used")
+            else:
+                st.info("🔧 LLM Not Used")
+                
+            if di_used:
+                st.success("📄 Document Intelligence Used")
+            else:
+                st.info("📄 Document Intelligence Not Used")
+        
+        # Show confidence breakdown if available
+        if hasattr(document.processing_meta, 'confidence_breakdown') and document.processing_meta.confidence_breakdown:
+            st.write("**🔍 Per-Field Confidence Breakdown:**")
+            breakdown_data = []
+            for field, details in document.processing_meta.confidence_breakdown.items():
+                breakdown_data.append({
+                    'Field': field,
+                    'Static Confidence': f"{details.get('static_confidence', 0):.2f}",
+                    'Dynamic Confidence': f"{details.get('dynamic_confidence', 0):.2f}",
+                    'Method': details.get('extraction_method', 'N/A'),
+                    'Required': '✓' if details.get('is_required', False) else '✗'
+                })
+            if breakdown_data:
+                st.dataframe(pd.DataFrame(breakdown_data), use_container_width=True)
     
     with tab2:
         st.subheader("Extracted Key-Value Pairs")
@@ -312,6 +369,21 @@ def display_document_details(result: Dict[str, Any]):
             st.info("No key-value pairs extracted")
     
     with tab3:
+        st.subheader("Normalized JSON")
+        
+        # Download button
+        json_str = json.dumps(document.to_dict(), indent=2, default=str)
+        st.download_button(
+            label="📥 Download JSON",
+            data=json_str,
+            file_name=f"{document.doc_id}_normalized.json",
+            mime="application/json"
+        )
+        
+        # Display JSON
+        st.json(document.to_dict())
+    
+    with tab4:
         st.subheader("Document Sections")
         
         if document.sections:
@@ -321,7 +393,7 @@ def display_document_details(result: Dict[str, Any]):
         else:
             st.info("No sections found")
     
-    with tab4:
+    with tab5:
         st.subheader("Processing Log")
         
         if result.get('processing_log'):

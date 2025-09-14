@@ -138,3 +138,5 @@ signatures/*.json
 
 # Test documents (optional)
 test_documents/
+
+datasets/

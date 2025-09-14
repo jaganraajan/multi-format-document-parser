@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentPipeline:
-    """Main document processing pipeline (LLM extraction focused)."""
+    """Main document processing pipeline (LLM extraction focused with signature reuse)."""
 
     def __init__(self,
                  rules_dir: str = "rules",
@@ -30,7 +30,11 @@ class DocumentPipeline:
                  outputs_dir: str = "outputs",
                  use_rules: bool = False,
                  enable_llm: bool = True,
-                 enable_di: bool = True):
+                 enable_di: bool = True,
+                 auto_enable_rules_local: bool = True,
+                 signature_reuse_threshold: float = 0.90,
+                 signature_cache_min_fields: int = 3,
+                 enable_signature_reuse: bool = True):
         """Initialize the pipeline.
 
         Args:
@@ -40,6 +44,10 @@ class DocumentPipeline:
             use_rules: Whether to also run legacy regex rules (future hybrid)
             enable_llm: Whether to enable Azure OpenAI LLM extraction
             enable_di: Whether to enable Azure Document Intelligence fallback
+            auto_enable_rules_local: Auto turn on rules when both external methods disabled
+            signature_reuse_threshold: Similarity required to reuse cached fields
+            signature_cache_min_fields: Minimum fields before caching a signature
+            enable_signature_reuse: Master toggle for signature-based gating
         """
         self.rules_dir = rules_dir
         self.signatures_dir = signatures_dir
@@ -47,6 +55,15 @@ class DocumentPipeline:
         self.use_rules = use_rules
         self.enable_llm = enable_llm
         self.enable_di = enable_di
+        self.auto_rules_enabled = False
+        self.signature_reuse_threshold = signature_reuse_threshold
+        self.signature_cache_min_fields = signature_cache_min_fields
+        self.enable_signature_reuse = enable_signature_reuse
+
+        # Auto-enable rules for pure local mode
+        if (not self.enable_llm and not self.enable_di and not self.use_rules and auto_enable_rules_local):
+            self.use_rules = True
+            self.auto_rules_enabled = True
 
         # Ensure directories exist
         os.makedirs(self.rules_dir, exist_ok=True)
@@ -66,12 +83,20 @@ class DocumentPipeline:
         self.email_extractor = EmailExtractor()
 
         logger.info("Pipeline initialized (LLM mode %s)" % ("+ rules" if self.use_rules else "only"))
-        
+        if self.auto_rules_enabled:
+            logger.info("Rules auto-enabled for pure local mode (LLM & DI both disabled)")
+        if self.enable_signature_reuse:
+            logger.info(
+                "Signature reuse enabled (threshold=%.2f, min_fields=%d)",
+                self.signature_reuse_threshold,
+                self.signature_cache_min_fields,
+            )
+
         if self.enable_llm:
             logger.info("LLM extraction enabled (user toggle: ON)")
         else:
             logger.info("LLM extraction disabled (user toggle: OFF)")
-            
+
         if self.di_extractor.enabled and self.enable_di:
             logger.info("Azure Document Intelligence fallback enabled (model %s)", self.di_extractor.model_id)
         elif self.enable_di and not self.di_extractor.enabled:
@@ -103,7 +128,55 @@ class DocumentPipeline:
         signature, similarity = self._process_signature(layout_elements, filename)
         document.processing_meta.signature_id = signature.signature_id
         document.processing_meta.signature_match_score = similarity
-        log_lines.append(f"Signature {signature.signature_id} (similarity {similarity:.2f})")
+        version_event = getattr(signature, '_last_version_event', None)
+        family_part = f" family={signature.family_id}" if getattr(signature, 'family_id', None) else ''
+        version_part = f" v{getattr(signature, 'active_version', 1)}" if hasattr(signature, 'active_version') else ''
+        event_part = f" event={version_event}" if version_event else ''
+        log_lines.append(
+            f"Signature {signature.signature_id}{family_part}{version_part} (similarity {similarity:.2f}){event_part}"
+        )
+
+        # --- Signature-based reuse gating ---
+        if (
+            self.enable_signature_reuse
+            and similarity >= self.signature_reuse_threshold
+            and getattr(signature, 'cached_fields', None)
+        ):
+            from .schema import KeyValue
+            reused = [
+                KeyValue(
+                    key=k,
+                    value=meta.get('value'),
+                    confidence=meta.get('confidence', 0.75),
+                    extraction_method='signature_cache'
+                )
+                for k, meta in signature.cached_fields.items()  # type: ignore
+            ]
+            document.key_values.extend(reused)
+            log_lines.append(
+                f"Signature reuse hit: similarity {similarity:.2f} ≥ {self.signature_reuse_threshold:.2f}; reused {len(reused)} cached fields and skipped model/rules"
+            )
+            self._finalize_document(document, text, layout_elements, file_type)
+            processing_time = time.time() - start_time
+            document.ingest_metadata.processing_time_seconds = processing_time
+            document.processing_meta.coverage_stats = calculate_coverage_stats(document)
+            save_path = self.repository.save_document(document)
+            log_lines.append(f"Saved to {save_path}")
+            log_lines.append(f"Completed in {processing_time:.2f}s (signature cache)")
+            logger.info(
+                "Processed document %s via signature cache in %.2fs", document.doc_id, processing_time
+            )
+            return document, "\n".join(log_lines)
+        else:
+            if self.enable_signature_reuse:
+                if similarity < self.signature_reuse_threshold:
+                    log_lines.append(
+                        f"Signature reuse skipped: similarity {similarity:.2f} < threshold {self.signature_reuse_threshold:.2f}"
+                    )
+                elif not getattr(signature, 'cached_fields', None):
+                    log_lines.append(
+                        "Signature reuse skipped: no cached_fields present on signature (first qualifying run will create cache)"
+                    )
 
         # --- LLM Extraction (primary) ---
         if self.enable_llm and self.llm_extractor.enabled:
@@ -113,6 +186,36 @@ class DocumentPipeline:
             log_lines.append(
                 f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
             )
+            # Try to assign family_id based on vendor field if present
+            if kvs:
+                vendor_value = None
+                for kv in kvs:
+                    if kv.key in ("vendor_name", "supplier_name") and isinstance(kv.value, str):
+                        vendor_value = kv.value
+                        break
+                if vendor_value:
+                    try:
+                        # Assign family if not set
+                        pre_family = getattr(signature, 'family_id', None)
+                        self.signature_manager.update_family_id(signature, vendor_value)
+                        # If a fresh signature (new_family) got a family_id that already exists elsewhere, merge
+                        if getattr(signature, '_last_version_event', None) == 'new_family' and signature.family_id:
+                            family_sigs = self.signature_manager.find_signatures_by_family(signature.family_id)
+                            # Prefer older signature (earliest created) as target
+                            if len(family_sigs) > 1:
+                                # Sort by created_at to pick earliest as target
+                                family_sigs_sorted = sorted(family_sigs, key=lambda s: s.created_at)
+                                target = family_sigs_sorted[0]
+                                if target.signature_id != signature.signature_id:
+                                    merged = self.signature_manager.merge_signature_into_family(signature, target)
+                                    if merged:
+                                        signature = merged  # update local ref
+                                        document.processing_meta.signature_id = signature.signature_id
+                                        log_lines.append(
+                                            f"Merged new layout into existing family {signature.signature_id} as version {signature.active_version}"
+                                        )
+                    except Exception:
+                        pass
         elif self.enable_llm and not self.llm_extractor.enabled:
             kvs = []
             log_lines.append("LLM selected but Azure env not configured – skipping")
@@ -141,12 +244,24 @@ class DocumentPipeline:
             rule_kvs, applied = self._apply_rules(text, signature.signature_id)
             document.key_values.extend(rule_kvs)
             document.processing_meta.rules_applied = applied
-            log_lines.append(f"Rules added {len(rule_kvs)} fields: {applied}")
+            auto_note = " (auto-enabled)" if self.auto_rules_enabled else ""
+            log_lines.append(f"Rules added {len(rule_kvs)} fields: {applied}{auto_note}")
         else:
             document.processing_meta.rules_applied = []
 
         # --- Sections & chunks ---
         self._finalize_document(document, text, layout_elements, file_type)
+
+        # --- Cache update (post-extraction) ---
+        try:
+            if (
+                self.enable_signature_reuse
+                and len(document.key_values) >= self.signature_cache_min_fields
+                and not any(kv.extraction_method == 'signature_cache' for kv in document.key_values)
+            ):
+                self.signature_manager.update_signature_cache(signature, document.key_values)
+        except Exception as e:
+            log_lines.append(f"Cache update failed: {e}")
 
         # --- Stats ---
         processing_time = time.time() - start_time

@@ -41,9 +41,9 @@ if 'pipeline' not in st.session_state:
 if 'processed_docs' not in st.session_state:
     st.session_state.processed_docs = []
 if 'enable_llm' not in st.session_state:
-    st.session_state.enable_llm = False  # Default to pure local mode
+    st.session_state.enable_llm = True  # Default to LLM enabled
 if 'enable_di' not in st.session_state:
-    st.session_state.enable_di = False   # Default to pure local mode
+    st.session_state.enable_di = True  # Default to DI enabled
 
 
 def initialize_pipeline():

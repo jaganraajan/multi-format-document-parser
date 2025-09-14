@@ -1,3 +1,5 @@
+Working solution demo - https://drive.google.com/file/d/19px0RxK2DatognF6_gzwYyisJ7vKy__w/view?usp=drive_link
+
 # Multi-Format Document Parser
 
 A starter Streamlit application for multi-format document processing using hybrid document normalization. This system combines rule-based extraction with layout signature learning to process heterogeneous document formats into normalized JSON output.

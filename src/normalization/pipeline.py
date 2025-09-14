@@ -60,9 +60,15 @@ class DocumentPipeline:
         self.signature_reuse_threshold = signature_reuse_threshold
         self.signature_cache_min_fields = signature_cache_min_fields
         self.enable_signature_reuse = enable_signature_reuse
+        # In-memory field cache for current process/session (signature_id -> {key: {value, confidence}})
+        self._signature_field_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-        # Auto-enable rules for pure local mode
-        if (not self.enable_llm and not self.enable_di and not self.use_rules and auto_enable_rules_local):
+        # Auto-enable rules for pure local mode OR when rules exist and not explicitly disabled
+        global_rules_path = os.path.join(self.rules_dir, 'global_rules.yml')
+        if (
+            (not self.enable_llm and not self.enable_di and not self.use_rules and auto_enable_rules_local)
+            or (os.path.exists(global_rules_path) and not self.use_rules and os.getenv('DISABLE_AUTO_RULES', 'false').lower() != 'true')
+        ):
             self.use_rules = True
             self.auto_rules_enabled = True
 
@@ -184,55 +190,87 @@ class DocumentPipeline:
                         "Signature reuse skipped: no cached_fields present on signature (first qualifying run will create cache)"
                     )
 
-        # --- LLM Extraction (primary) ---
-        if self.enable_llm and self.llm_extractor.enabled:
-            kvs, llm_meta = self.llm_extractor.extract(text)
-            document.key_values.extend(kvs)
-            document.processing_meta.model_calls_made += 1 if kvs else 0
-            
-            # Track LLM usage
-            if kvs or llm_meta.get('error') != 'llm_disabled':
-                self.usage_tracker.record_llm_call(llm_meta)
-            
-            log_lines.append(
-                f"LLM fields: {len(kvs)} model={llm_meta.get('model_used')} error={llm_meta.get('error')}"
-            )
-            # Try to assign family_id based on vendor field if present
-            if kvs:
-                vendor_value = None
-                for kv in kvs:
-                    if kv.key in ("vendor_name", "supplier_name") and isinstance(kv.value, str):
-                        vendor_value = kv.value
-                        break
-                if vendor_value:
-                    try:
-                        # Assign family if not set
-                        pre_family = getattr(signature, 'family_id', None)
-                        self.signature_manager.update_family_id(signature, vendor_value)
-                        # If a fresh signature (new_family) got a family_id that already exists elsewhere, merge
-                        if getattr(signature, '_last_version_event', None) == 'new_family' and signature.family_id:
-                            family_sigs = self.signature_manager.find_signatures_by_family(signature.family_id)
-                            # Prefer older signature (earliest created) as target
-                            if len(family_sigs) > 1:
-                                # Sort by created_at to pick earliest as target
-                                family_sigs_sorted = sorted(family_sigs, key=lambda s: s.created_at)
-                                target = family_sigs_sorted[0]
-                                if target.signature_id != signature.signature_id:
-                                    merged = self.signature_manager.merge_signature_into_family(signature, target)
-                                    if merged:
-                                        signature = merged  # update local ref
-                                        document.processing_meta.signature_id = signature.signature_id
-                                        log_lines.append(
-                                            f"Merged new layout into existing family {signature.signature_id} as version {signature.active_version}"
-                                        )
-                    except Exception:
-                        pass
-        elif self.enable_llm and not self.llm_extractor.enabled:
-            kvs = []
-            log_lines.append("LLM selected but Azure env not configured – skipping")
+        # --- Rules first ---
+        rule_kvs: List[Any] = []
+        if self.use_rules:
+            rule_kvs, applied = self._apply_rules(text, signature.signature_id)
+            document.key_values.extend(rule_kvs)
+            document.processing_meta.rules_applied = applied
+            self.usage_tracker.record_rules_hit(len(rule_kvs))
+            # Interim coverage stats after rules only
+            try:
+                interim_cov = calculate_coverage_stats(document)
+                document.processing_meta.coverage_stats = interim_cov
+                rule_cov_pct = interim_cov.get('rule_coverage', 0.0) * 100
+                log_lines.append(f"Rules added {len(rule_kvs)} fields (rule coverage {rule_cov_pct:.1f}%)")
+            except Exception as e:
+                log_lines.append(f"Rule coverage calculation failed: {e}")
         else:
-            kvs = []
-            log_lines.append("LLM disabled by user toggle")
+            document.processing_meta.rules_applied = []
+
+        # --- Session cache reuse (if no persisted cached_fields yet) ---
+        session_cache_hit = False
+        if (
+            self.enable_signature_reuse
+            and similarity >= self.signature_reuse_threshold
+            and not getattr(signature, 'cached_fields', None)
+        ):
+            cached_session = self._signature_field_cache.get(signature.signature_id)
+            if cached_session:
+                from .schema import KeyValue
+                reused = [
+                    KeyValue(key=k, value=v.get('value'), confidence=v.get('confidence', 0.7), extraction_method='session_cache')
+                    for k, v in cached_session.items()
+                ]
+                # avoid duplicates
+                existing_keys = {kv.key for kv in document.key_values}
+                reused = [kv for kv in reused if kv.key not in existing_keys]
+                if reused:
+                    document.key_values.extend(reused)
+                    session_cache_hit = True
+                    log_lines.append(
+                        f"Session cache reuse hit: similarity {similarity:.2f} reused {len(reused)} fields (no disk cached_fields yet)"
+                    )
+
+        # --- LLM Extraction (gated) ---
+        kvs: List[Any] = []
+        if not session_cache_hit:  # only consider LLM if we didn't reuse from session
+            if self.enable_llm and self.llm_extractor.enabled:
+                # Gate on confidence of existing fields (rules)
+                confidences = [kv.confidence for kv in document.key_values if getattr(kv, 'confidence', None) is not None]
+                avg_conf = sum(confidences)/len(confidences) if confidences else 0.0
+                need_llm = (len(document.key_values) == 0) or (avg_conf < 0.70)
+                if need_llm:
+                    kvs, llm_meta = self.llm_extractor.extract(text)
+                    document.key_values.extend(kvs)
+                    document.processing_meta.model_calls_made += 1 if kvs else 0
+                    if kvs or llm_meta.get('error') != 'llm_disabled':
+                        self.usage_tracker.record_llm_call(llm_meta)
+                    log_lines.append(
+                        f"LLM fields: {len(kvs)} avg_conf_before={avg_conf:.2f} model={llm_meta.get('model_used')}"
+                    )
+                    # Assign family ID if possible
+                    if kvs:
+                        vendor_value = None
+                        for kv in kvs:
+                            if kv.key in ("vendor_name", "supplier_name") and isinstance(kv.value, str):
+                                vendor_value = kv.value
+                                break
+                        if vendor_value:
+                            try:
+                                self.signature_manager.update_family_id(signature, vendor_value)
+                            except Exception:
+                                pass
+                else:
+                    log_lines.append(f"LLM skipped avg_conf={avg_conf:.2f} >= 0.70")
+            elif self.enable_llm and not self.llm_extractor.enabled:
+                kvs = []
+                log_lines.append("LLM selected but Azure env not configured – skipping")
+            else:
+                kvs = []
+                log_lines.append("LLM disabled by user toggle")
+        else:
+            log_lines.append("LLM skipped due to session cache reuse")
 
         # --- Azure Document Intelligence Fallback (PDF only) ---
         di_triggered = False
@@ -254,19 +292,21 @@ class DocumentPipeline:
             else:
                 log_lines.append("DI disabled by user toggle")
 
-        # Optional legacy rules (disabled by default)
-        if self.use_rules:
-            rule_kvs, applied = self._apply_rules(text, signature.signature_id)
-            document.key_values.extend(rule_kvs)
-            document.processing_meta.rules_applied = applied
-            
-            # Track rule usage
-            self.usage_tracker.record_rules_hit(len(rule_kvs))
-            
-            auto_note = " (auto-enabled)" if self.auto_rules_enabled else ""
-            log_lines.append(f"Rules added {len(rule_kvs)} fields: {applied}{auto_note}")
-        else:
-            document.processing_meta.rules_applied = []
+        # Populate session cache after extraction if we have fields and none persisted yet
+        if (
+            self.enable_signature_reuse
+            and len(document.key_values) >= self.signature_cache_min_fields
+            and not getattr(signature, 'cached_fields', None)
+        ):
+            try:
+                cache_payload: Dict[str, Dict[str, Any]] = {}
+                for kv in document.key_values:
+                    if kv.key not in cache_payload:
+                        cache_payload[kv.key] = {"value": kv.value, "confidence": getattr(kv, 'confidence', None)}
+                self._signature_field_cache[signature.signature_id] = cache_payload
+                log_lines.append(f"Session cache stored {len(cache_payload)} fields for signature {signature.signature_id}")
+            except Exception as e:
+                log_lines.append(f"Session cache store failed: {e}")
 
         # --- Sections & chunks ---
         self._finalize_document(document, text, layout_elements, file_type)

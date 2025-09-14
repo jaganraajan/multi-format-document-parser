@@ -225,7 +225,7 @@ The pipeline supports user-toggled AI usage. If both AI toggles are off, documen
 
 ## 🤖 LLM Extraction (Azure OpenAI)
 
-The pipeline now uses an Azure OpenAI model to extract key fields (invoice_number, total_amount, date, vendor_name, email, phone_number) directly from the raw document text. Regex rules are still present but currently disabled by default unless you enable hybrid mode in code.
+The pipeline uses an Azure OpenAI model to extract key fields (invoice_number, total_amount, date, vendor_name, email, phone_number) directly from the raw document text.
 
 ### 1. Azure Setup
 Provision an Azure OpenAI resource and create a model deployment (e.g. `gpt-4o-mini`). Note the endpoint URL and API key.
@@ -249,17 +249,4 @@ streamlit run app/streamlit_app.py
 ```
 
 If Azure environment variables are missing, the LLM extractor safely returns no fields (mock mode) and the document still processes (fields list will be empty). This allows local development without API calls.
-
-### 4. Hybrid Mode (Future)
-Hybrid (LLM + regex rules) can be enabled later by instantiating `DocumentPipeline(use_rules=True)` in your code. Currently, rules are skipped unless that flag is set. This maintains forward compatibility for adding fallback extraction.
-
-### 5. Cost & Logging
-The module tracks the number of model calls in `processing_meta.model_calls_made`. You can extend it to record token usage and cost once the Azure responses are parsed for usage metadata.
-
-### 6. Extending Fields
-Edit `DEFAULT_FIELDS` in `src/normalization/llm_extractor.py` or pass a custom list when creating `AzureOpenAILLMExtractor`. Each field needs a unique `name` and a short `description` to guide the model.
-
-### 7. Failure Handling
-If the JSON response is malformed, a defensive parser attempts cleanup; otherwise the field list is empty and an error string is stored in metadata for debugging.
-
 ---
